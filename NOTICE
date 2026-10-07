@@ -1,0 +1,6 @@
+stormnic-i40e
+=============
+
+An original Rust implementation, licensed MIT (see LICENSE).
+
+Acknowledgement: hardware facts are learned from Intel's public X710 datasheet and iPXE's intelxl.c (behaviour only). No source code is copied.
