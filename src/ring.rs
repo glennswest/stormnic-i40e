@@ -235,7 +235,7 @@ impl Net {
         let i = self.rx_next;
         self.post_rx(i);
         self.rx_next = (i + 1) % RX_COUNT;
-        if i % RX_BATCH == 0 {
+        if i.is_multiple_of(RX_BATCH) {
             dma_wmb();
             mmio_wmb();
             b.w32(qrx_tail(self.q()), i as u32)?;

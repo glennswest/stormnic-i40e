@@ -66,7 +66,7 @@ fn align(v: u64) -> u64 { v.div_ceil(OBJ_ALIGN) * OBJ_ALIGN }
 /// Lay out contexts for queues 0..=`queue` and program the FPM registers
 /// and the segment descriptor.
 pub fn setup<B: Bus>(b: &mut B, dma: &Dma, pf: u32, queue: u32) -> R<Layout, B::Error> {
-    if dma.at(0) % PAGE != 0 { return Err(Error::Unaligned { device: dma.at(0) }); }
+    if !dma.at(0).is_multiple_of(PAGE) { return Err(Error::Unaligned { device: dma.at(0) }); }
     let qmax = rd(b, GLHMC_LANQMAX)? & 0x7ff;
     let tx_exp = rd(b, GLHMC_LANTXOBJSZ)? & 0xf;
     let rx_exp = rd(b, GLHMC_LANRXOBJSZ)? & 0xf;
