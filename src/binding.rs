@@ -10,7 +10,7 @@
 //! Start holds `EFI_PCI_IO_PROTOCOL` BY_DRIVER | EXCLUSIVE (`Held`), enables
 //! memory decode and bus mastering (`decode`), identifies the PF
 //! (`i40e::identify`), maps one DMA region, and brings the device up
-//! (`bring_up`): queues and interrupts a previous driver left are cleared,
+//! (`i40e::bring_up`, each step traced): queues and interrupts a previous driver left are cleared,
 //! the PF is reset, the admin queue is set up and the firmware asked for its
 //! version, out of PXE mode, the MAC address, the VSI and its queue; the
 //! HMC is laid out, the link is read (autonegotiation restarted if it is
@@ -35,9 +35,8 @@ use uefi_raw::protocol::driver::DriverBindingProtocol;
 
 use crate::console;
 use crate::decode::{self, Enabled};
-use crate::i40e::adminq::{AdminQ, Version, Vsi};
-use crate::i40e::ring::{self, Net};
-use crate::i40e::{self, hmc, Bus, Dma, Error, Identity, Link, ResetStage};
+use crate::i40e::adminq::AdminQ;
+use crate::i40e::{self, Bus, Dma, Error, ResetStage, Step};
 use crate::ids::{self, Nic};
 use crate::pci_io::{Location, PciIo, Width};
 use crate::snp;
@@ -361,7 +360,7 @@ impl I40eDriver {
             }
         };
         let mut aq = AdminQ::new(region.dma());
-        let up = match bring_up(&mut bars, &mut aq, region.dma(), &id, &at, dev) {
+        let up = match i40e::bring_up(&mut bars, &mut aq, region.dma(), &id, LINK_WAIT_MS, &mut |s| log_step(&at, dev, s)) {
             Ok(up) => up,
             Err(e) => {
                 fail!("stormnic-i40e: {at} 8086:{dev:04x} {}: bring-up failed: {}", nic.name, error(&e));
@@ -434,88 +433,52 @@ impl I40eDriver {
     }
 }
 
-/// What a successful bring-up hands the SNP.
-struct Up {
-    net: Net,
-    link: Link,
-    version: Version,
-}
-
-/// Clear what a previous driver left, reset the PF, set up the admin queue
-/// and ask the firmware what Start needs, lay out the HMC, read the link
-/// (restarting autonegotiation if it is down) and run the DMA check when it
-/// is up. The queues are stopped again on return.
-fn bring_up(b: &mut Bars, aq: &mut AdminQ, dma: Dma, id: &Identity, at: &impl core::fmt::Display, dev: u16)
-    -> core::result::Result<Up, Error<Status>> {
-    i40e::clear(b, id)?;
-    let reset = i40e::pf_reset(b)?;
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: {}, firmware ready after {} ms",
-        if reset.global { "a global reset was in progress; PF reset not needed".into() }
-        else { alloc::format!("PF reset in {} ms", reset.pf_ms) },
-        reset.firmware_ms
-    );
-    aq.init(b)?;
-    let version = aq.version(b)?;
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: firmware {}.{} build {:#x}, API {}.{}, NVM/ROM {:#x}",
-        version.fw_major, version.fw_minor, version.fw_build, version.api_major, version.api_minor, version.rom
-    );
-    let pxe = aq.clear_pxe(b)?;
-    trace!("stormnic-i40e: {at} 8086:{dev:04x}: PXE mode {}", if pxe { "cleared" } else { "already clear" });
-    let mac = aq.mac_read(b)?;
-    let seid = aq.find_vsi(b)?;
-    let vsi: Vsi = aq.vsi(b, seid)?;
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: MAC {}, VSI {:#x}, queue {}, queue set {:#x}",
-        mac_str(mac), vsi.seid, vsi.queue, vsi.qset
-    );
-    match aq.add_mac(b, vsi.seid, mac) {
-        Ok(added) => trace!(
+/// The trace line for each bring-up step.
+fn log_step(at: &impl core::fmt::Display, dev: u16, step: Step<Status>) {
+    match step {
+        Step::Reset(r) if r.global => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: a global reset was in progress (PF reset not needed); firmware ready after {} ms",
+            r.firmware_ms
+        ),
+        Step::Reset(r) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: PF reset in {} ms, firmware ready after {} ms", r.pf_ms, r.firmware_ms
+        ),
+        Step::Version(v) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: firmware {}.{} build {:#x}, API {}.{}, ROM {:#x}",
+            v.fw_major, v.fw_minor, v.fw_build, v.api_major, v.api_minor, v.rom
+        ),
+        Step::Pxe(cleared) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: PXE mode {}", if cleared { "cleared" } else { "already clear" }
+        ),
+        Step::Vsi { mac, vsi } => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: MAC {}, VSI {:#x}, queue {}, queue set {:#x}",
+            mac_str(mac), vsi.seid, vsi.queue, vsi.qset
+        ),
+        Step::MacFilter(Ok(added)) => trace!(
             "stormnic-i40e: {at} 8086:{dev:04x}: MAC filter (any VLAN) {}", if added { "added" } else { "already there" }
         ),
-        // Not fatal: the firmware's own filter (VLAN 0) still passes untagged frames.
-        Err(e) => trace!("stormnic-i40e: {at} 8086:{dev:04x}: MAC filter (any VLAN) not added: {}", error(&e)),
+        Step::MacFilter(Err(e)) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: MAC filter (any VLAN) not added: {}; the firmware's own filter stays", error(&e)
+        ),
+        Step::Hmc(l) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: HMC: {} queue context(s), {} B TX / {} B RX objects, RX contexts at {:#x}; DMA {} pages",
+            l.count, l.tx_size, l.rx_size, l.rx_base, i40e::DMA_PAGES
+        ),
+        Step::Link { link, waited_ms: None } => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: link {link} (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
+            link.phy_type, link.info, link.an
+        ),
+        Step::Link { link, waited_ms: Some(ms) } => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: link was down; autonegotiation restarted, link {link} after {ms} ms (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
+            link.phy_type, link.info, link.an
+        ),
+        Step::Check(Some(ms)) => trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: DMA check: broadcast frame sent, descriptor done after {ms} ms"
+        ),
+        Step::Check(None) => say!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: DMA check: the device did not mark the frame's descriptor done within 100 ms"
+        ),
     }
-    let layout = hmc::setup(b, &dma, id.pf, vsi.queue as u32)?;
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: HMC: {} queue context(s), {} B TX / {} B RX objects, RX base {:#x}",
-        layout.count, layout.tx_size, layout.rx_size, layout.rx_base
-    );
-    let mut link = aq.link(b, false)?;
-    if !link.up {
-        aq.restart_an(b)?;
-        let mut waited = 0;
-        while !link.up && waited < LINK_WAIT_MS {
-            b.delay_us(100_000);
-            waited += 100;
-            link = aq.link(b, false)?;
-        }
-        trace!(
-            "stormnic-i40e: {at} 8086:{dev:04x}: link was down; autonegotiation restarted, link {link} after {waited} ms"
-        );
-    }
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: link {link} (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
-        link.phy_type, link.info, link.an
-    );
-    let mut net = Net::new(dma, mac, *id, vsi, layout);
-    trace!(
-        "stormnic-i40e: {at} 8086:{dev:04x}: DMA: {} pages at device {:#x}, rings RX {} x 32 B / TX {} x 16 B, buffers {} B",
-        i40e::DMA_PAGES, dma.device, i40e::RX_COUNT, i40e::TX_COUNT, i40e::BUF_SIZE
-    );
-    if link.up {
-        net.start(b)?;
-        let checked = ring::check(b, &mut net);
-        net.stop(b)?;
-        match checked? {
-            Some(ms) => trace!("stormnic-i40e: {at} 8086:{dev:04x}: DMA check: broadcast frame sent, descriptor done after {ms} ms"),
-            None => say!("stormnic-i40e: {at} 8086:{dev:04x}: DMA check: the device did not mark the frame's descriptor done within 100 ms"),
-        }
-    } else {
-        trace!("stormnic-i40e: {at} 8086:{dev:04x}: DMA check skipped: link down");
-    }
-    Ok(Up { net, link, version })
 }
 
 /// The device would not tear down: it might still DMA into the region, so

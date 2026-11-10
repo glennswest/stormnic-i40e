@@ -351,6 +351,78 @@ pub fn release<B: Bus>(b: &mut B, aq: &mut adminq::AdminQ) -> R<(), B::Error> {
     off.and(reset)
 }
 
+/// A step of `bring_up`, for the console's trace.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Step<E> {
+    Reset(Reset),
+    Version(adminq::Version),
+    /// PXE mode was on and is now cleared (false: it was already off).
+    Pxe(bool),
+    Vsi { mac: [u8; 6], vsi: adminq::Vsi },
+    /// The MAC filter for any VLAN: added, already there, or refused
+    /// (not fatal: the firmware's own filter passes untagged frames).
+    MacFilter(Result<bool, Error<E>>),
+    Hmc(hmc::Layout),
+    /// The link, and how long Start waited after restarting
+    /// autonegotiation (None: it was up, nothing restarted).
+    Link { link: Link, waited_ms: Option<usize> },
+    /// The DMA check: the descriptor came back after this many ms, or not
+    /// within 100 ms.
+    Check(Option<usize>),
+}
+
+/// The device brought up: what the SNP needs.
+pub struct Up {
+    pub net: ring::Net,
+    pub link: Link,
+    pub version: adminq::Version,
+}
+
+/// Start's bring-up, each step reported to `log`: clear what a previous
+/// driver left, reset the PF, set up the admin queue and ask the firmware
+/// for its version, out of PXE mode, the MAC address and the VSI; add the
+/// MAC filter, lay out the HMC, read the link (restarting autonegotiation
+/// and waiting up to `link_wait_ms` if it is down) and, when it is up, run
+/// the DMA check on the queue pair. The queues are stopped on return; on
+/// Err the caller tears down with `release`.
+pub fn bring_up<B: Bus>(b: &mut B, aq: &mut adminq::AdminQ, dma: Dma, id: &Identity, link_wait_ms: usize,
+    log: &mut dyn FnMut(Step<B::Error>)) -> R<Up, B::Error> {
+    clear(b, id)?;
+    log(Step::Reset(pf_reset(b)?));
+    aq.init(b)?;
+    let version = aq.version(b)?;
+    log(Step::Version(version));
+    log(Step::Pxe(aq.clear_pxe(b)?));
+    let mac = aq.mac_read(b)?;
+    let seid = aq.find_vsi(b)?;
+    let vsi = aq.vsi(b, seid)?;
+    log(Step::Vsi { mac, vsi });
+    log(Step::MacFilter(aq.add_mac(b, vsi.seid, mac)));
+    let layout = hmc::setup(b, &dma, id.pf, vsi.queue as u32)?;
+    log(Step::Hmc(layout));
+    let mut link = aq.link(b, false)?;
+    let mut waited_ms = None;
+    if !link.up {
+        aq.restart_an(b)?;
+        let mut waited = 0;
+        while !link.up && waited < link_wait_ms {
+            b.delay_us(100_000);
+            waited += 100;
+            link = aq.link(b, false)?;
+        }
+        waited_ms = Some(waited);
+    }
+    log(Step::Link { link, waited_ms });
+    let mut net = ring::Net::new(dma, mac, *id, vsi, layout);
+    if link.up {
+        net.start(b)?;
+        let checked = ring::check(b, &mut net);
+        net.stop(b)?;
+        log(Step::Check(checked?));
+    }
+    Ok(Up { net, link, version })
+}
+
 pub fn unicast(m: [u8; 6]) -> bool {
     m != [0; 6] && m[0] & 1 == 0
 }
