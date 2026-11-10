@@ -1,3 +1,13 @@
 target/
 tmp/
 *.efi
+
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+*.img
+*.log
+.DS_Store
+dist/
