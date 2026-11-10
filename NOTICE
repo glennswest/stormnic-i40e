@@ -3,4 +3,10 @@ stormnic-i40e
 
 An original Rust implementation, licensed MIT (see LICENSE).
 
-Acknowledgement: hardware facts are learned from Intel's public X710 datasheet and iPXE's intelxl.c (behaviour only). No source code is copied.
+Acknowledgement: the hardware facts in docs/hardware.md (register offsets
+and fields, the reset sequence, the admin-queue protocol and commands, the
+HMC and queue-context layouts, descriptor formats) were learned from Intel's
+shared code for the 700 series as published in FreeBSD sys/dev/ixl
+(BSD-3-Clause, commit 4b732459f030). iPXE's intelxl.c (GPL) was read for
+behaviour only. No source code was copied; the driver is a rewrite, and
+docs/hardware.md describes the hardware in its own words.

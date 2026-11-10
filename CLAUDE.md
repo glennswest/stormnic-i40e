@@ -2,27 +2,13 @@
 
 A `no_std` UEFI driver giving firmware an `EFI_SIMPLE_NETWORK_PROTOCOL` for
 Intel X710 / XL710 / XXV710 / X722 (the Linux `i40e` family), loaded by
-stormbootx from `\stormboot\drivers` on its rustnic media. A sibling of
-stormnic-ixgbe (the template: binding, decode, rings, SNP, quiet console,
-reproducible build) and stormnic-mlx4/mlx5/virtio. Read README.md first.
+stormbootx from `\stormboot\drivers` once it has run on a device (not on the
+rustnic media before that). A sibling of stormnic-igb (the template: binding,
+decode, rings, SNP, quiet console) and stormnic-ixgbe/mlx4/mlx5/virtio. Read
+README.md and docs/hardware.md first.
 
 Read the cross-project rules in `../CLAUDE.md` first: build with `sc-build`
 after pushing, never on this VM and never as root; scratch files in `tmp/`.
-
-## Rules for this crate (planned, as stormnic-ixgbe)
-
-- **Sources:** Intel's public X710/XL710 and X722 datasheets for registers,
-  the admin queue and descriptor formats; Intel's own BSD-3-Clause shared code
-  as published in FreeBSD `sys/dev/ixl` for admin-queue command sequences
-  (the precedent: stormnic-ixgbe#2, and the owner's choice of FreeBSD
-  `sys/dev/ice` for stormbootx#72); the SNP from the UEFI specification.
-  **Never translated from iPXE `intelxl.c` or Linux `i40e`** (GPL): the crate
-  is MIT. Reading them for behaviour is fine.
-- An EFI boot-service driver (subsystem 11) installing
-  `EFI_DRIVER_BINDING_PROTOCOL`; a platform's own driver wins (BY_DRIVER open
-  of PciIo, decline if held).
-- Console: one line per NIC by default, the trace behind `StormnicVerbose` /
-  `--features verbose` (as stormnic-ixgbe#22).
 
 ## Hardware
 
@@ -55,6 +41,13 @@ stormbootx#72).
   takes over.
 - Console: one line per NIC by default, the trace behind `StormnicVerbose` /
   `--features verbose`.
+
+## Build and test
+
+```bash
+sc-build scripts/check-driver.sh   # x86_64 + aarch64 build, clippy -D warnings, PE32+ subsystem 11
+sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.rs)
+```
 
 ## Version
 
