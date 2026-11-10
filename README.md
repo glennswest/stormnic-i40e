@@ -1,6 +1,6 @@
 # stormnic-i40e
 
-A Rust `no_std` UEFI Simple Network Protocol (SNP) driver for **Intel i40e (X710, XL710, XXV710, X722)** (8086:1572, 1583/1584, 1589, 158B, 15FF, 37D0–37D3), loaded by
+A Rust `no_std` UEFI Simple Network Protocol (SNP) driver for **Intel i40e (X710, XL710, XXV710, X722)** (27 Intel PF device IDs, listed in `src/ids.rs`; the virtual functions and the pre-silicon 1574 are not bound), loaded by
 [stormbootx](https://github.com/glennswest/stormbootx) so it can claim and boot images over these NICs without iPXE.
 A sibling of stormnic-ixgbe, stormnic-mlx4 and stormnic-virtio, built and pinned the same way (stormbootx `build-nic-drivers.sh`).
 
@@ -32,7 +32,7 @@ reset the PF before any memory is given back.
 
 Console: one line per NIC (`... firmware 9.1 API 1.15, MAC ..., link up 10
 Gb/s, SNP installed (verified in simulation only)`); the full trace with
-`StormnicVerbose` set or `--features verbose`.
+`StormnicVerbose` set or `--features verbose`. The variable lives under the vendor GUID shared by all stormnic drivers (`ce1479a2-eab9-4176-b0ad-c909ea5b8e0b`), so one `setvar` turns them all verbose. Without it, trace lines are kept and printed only ahead of a failure.
 
 See docs/hardware.md for the hardware facts used.
 

@@ -57,7 +57,7 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
 
 - [x] #1 — UEFI SNP driver: bind, link, transmit/receive (closed 2026-11-10 on
       simulation, master's decision for the owner)
-  - [x] Scaffold from stormnic-igb, 26 PF IDs (FreeBSD i40e_devids.h + pci.ids)
+  - [x] Scaffold from stormnic-igb, 27 PF IDs (FreeBSD i40e_devids.h + pci.ids)
   - [x] Core: PF reset, admin queue, HMC, rings with WB_ON_ITR, SNP core
   - [x] Simulated X710 + firmware model; `sc-build scripts/test-host.sh` at
         7e902ea: 49 pass (i40e 30, snp 16, trace 3)
