@@ -4,6 +4,7 @@
 
 ### 2026-11-10
 - **docs:** refreshed from the code: PF ID count is 27 (was 26), README names the ID source and the shared `StormnicVerbose` GUID
+- **docs:** #2 work plan: no 700-series NIC in the lab yet (asset list re-checked); hardware check waits on a card
 
 ## [v0.1.0] — 2026-11-10
 

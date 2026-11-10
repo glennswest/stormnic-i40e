@@ -66,3 +66,5 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
   - [x] docs/hardware.md, README, NOTICE, CHANGELOG, v0.1.0
 - [ ] #2 — run it on a real 700-series NIC (none in the lab); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
+      — waiting on a card (2026-11-10: asset list still shows only 82599, tg3
+      and ConnectX-3/-4 Lx NICs); parked with `wait-owner --until`.
