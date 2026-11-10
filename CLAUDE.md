@@ -51,19 +51,18 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
 
 ## Version
 
-`Cargo.toml` → `package.version`. Planned first: `v0.1.0`.
+`Cargo.toml` → `package.version`. Current: `v0.1.0`.
 
 ## Work plan
 
-- [ ] #1 — UEFI SNP driver: bind, link, transmit/receive (simulation-verified)
-  - [ ] Scaffold: Cargo, build.rs (subsystem 11), glue from stormnic-igb,
-        PCI IDs (FreeBSD i40e_devids.h + pci.ids: 37d4, 0dda)
-  - [ ] Core: PF reset, admin queue (version, clear PXE, MAC read, switch
-        config, VSI params, promiscuous modes, link status/restart AN),
-        HMC (paged SD, one PD page, one backing page) and queue contexts,
-        rings (32-byte RX, 16-byte TX, WB_ON_ITR write-back), SNP core
-  - [ ] Simulated X710 + firmware model, host tests (`scripts/test-host.sh`)
-  - [ ] `sc-build scripts/check-driver.sh` (x86_64 + aarch64, clippy, PE32+ 11)
-  - [ ] docs/hardware.md, README, CHANGELOG, v0.1.0
-  - [ ] Hardware verification as its own issue; stormbootx pin only after it
-        (not on the rustnic media until then)
+- [x] #1 — UEFI SNP driver: bind, link, transmit/receive (closed 2026-11-10 on
+      simulation, master's decision for the owner)
+  - [x] Scaffold from stormnic-igb, 26 PF IDs (FreeBSD i40e_devids.h + pci.ids)
+  - [x] Core: PF reset, admin queue, HMC, rings with WB_ON_ITR, SNP core
+  - [x] Simulated X710 + firmware model; `sc-build scripts/test-host.sh` at
+        7e902ea: 49 pass (i40e 30, snp 16, trace 3)
+  - [x] `sc-build scripts/check-driver.sh` at 1529945: x86_64 65,536 B
+        (sha256 fc51e1bd…f976), aarch64 61,440 B, PE32+ subsystem 11, clippy clean
+  - [x] docs/hardware.md, README, NOTICE, CHANGELOG, v0.1.0
+- [ ] #2 — run it on a real 700-series NIC (none in the lab); only then pin in
+      stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
