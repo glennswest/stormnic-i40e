@@ -29,31 +29,48 @@ after pushing, never on this VM and never as root; scratch files in `tmp/`.
 **No i40e device in the lab (checked 2026-11-07).** `stormcentral asset list`
 shows only 82599 (8086:1557, server1/7/8), tg3 (14e4:165f, C2NR0Q2, forge1)
 and Mellanox (C2NR0Q2 15b3:1015, forge1) NICs; QEMU emulates no i40e part.
-#1 asks for a VM or device check before closing, so how #1 is verified is the
-owner's decision (question on #1).
+**Decision (master for the owner, 2026-11-10, on #1): option 1.** Written from
+the datasheets + BSD `ixl` shared code, tested against a simulated device,
+closed on simulation; it stays **off the rustnic media** until it has run on a
+device, and hardware verification is its own issue (as stormnic-ixgbe#23,
+stormbootx#72).
+
+## Rules for this crate
+
+- **Sources:** Intel's BSD-3-Clause shared code as published in FreeBSD
+  `sys/dev/ixl` (commit 4b732459f030, 2026-11-05) for registers, admin-queue
+  commands, the HMC and the queue contexts; pci.ids 2026.11.09 for the IDs; the
+  UEFI specification for the binding and SNP. iPXE `intelxl.c` and Linux
+  `i40e` (GPL) are read for behaviour only, **never translated**: the crate is
+  MIT. docs/hardware.md says the hardware facts in its own words.
+- Same layout as stormnic-igb: a UEFI-independent core (`src/i40e.rs`,
+  `src/adminq.rs`, `src/hmc.rs`, `src/ring.rs`, `src/snp_core.rs`) tested on
+  the host against a simulated X710 with a firmware model (`test/`); the UEFI
+  glue (`binding.rs`, `snp.rs`, `pci_io.rs`) from stormnic-igb.
+- EFI boot-service driver (subsystem 11); BY_DRIVER | EXCLUSIVE open of
+  PciIo, so a platform driver that holds the NIC wins.
+- The NIC is quiet whenever nobody drives it: queues disabled at every Start
+  failure, SNP Shutdown/Stop, binding Stop and ExitBootServices; the admin
+  queue is disabled and the PF reset before any DMA memory is freed or the OS
+  takes over.
+- Console: one line per NIC by default, the trace behind `StormnicVerbose` /
+  `--features verbose`.
 
 ## Version
 
-`Cargo.toml` → `package.version` (no crate yet). Planned first: `v0.1.0`.
+`Cargo.toml` → `package.version`. Planned first: `v0.1.0`.
 
 ## Work plan
 
-- [ ] #1 — UEFI SNP driver: bind, link, transmit/receive; pinned in
-  stormbootx's `build-nic-drivers.sh`
-  - **Waiting on the owner, 2026-11-07.** No lab machine or VM can run an
-    i40e (see Hardware). Asked on #1: (1) write it from the datasheets + BSD
-    `ixl` code, simulation-tested, not on the rustnic media until it runs on a
-    device, close #1 on simulation with hardware verification its own issue
-    (as stormnic-ixgbe#23 and stormbootx#72); (2) the owner fits an X710/XL710
-    card in a test machine first; (3) stay paused. Recommended: (1). No code
-    until answered.
-  - Plan once answered (stormnic-ixgbe's structure): `ids` (the issue's PFs 1572,
-    1583/1584, 1589, 158b, 15ff, 37d0–37d3, plus those stormbootx#71's
-    pci.ids check found: 1580/1581, 1585–1588, 158a, 104e/104f, 101f,
-    37ce/37cf, 37d4; re-check against pci.ids when coding starts), `binding`, `decode`, `adminq` (ATQ/ARQ rings, get version,
-    clear PXE mode, get switch config, VSI parameters, set MAC config,
-    link status, MAC address read), `rings` (queue context in HMC/LAN context
-    via the admin queue, 32-byte RX / 16-byte TX descriptors, QTX_ENA/QRX_ENA),
-    `snp_core`/`snp`, `console`/`trace`; a simulated device with an admin-queue
-    firmware model under `test/`; `scripts/check-driver.sh`,
-    `scripts/test-hardware.sh`, `scripts/check-reproducible.sh`.
+- [ ] #1 — UEFI SNP driver: bind, link, transmit/receive (simulation-verified)
+  - [ ] Scaffold: Cargo, build.rs (subsystem 11), glue from stormnic-igb,
+        PCI IDs (FreeBSD i40e_devids.h + pci.ids: 37d4, 0dda)
+  - [ ] Core: PF reset, admin queue (version, clear PXE, MAC read, switch
+        config, VSI params, promiscuous modes, link status/restart AN),
+        HMC (paged SD, one PD page, one backing page) and queue contexts,
+        rings (32-byte RX, 16-byte TX, WB_ON_ITR write-back), SNP core
+  - [ ] Simulated X710 + firmware model, host tests (`scripts/test-host.sh`)
+  - [ ] `sc-build scripts/check-driver.sh` (x86_64 + aarch64, clippy, PE32+ 11)
+  - [ ] docs/hardware.md, README, CHANGELOG, v0.1.0
+  - [ ] Hardware verification as its own issue; stormbootx pin only after it
+        (not on the rustnic media until then)
