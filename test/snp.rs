@@ -26,6 +26,8 @@ fn snp() -> (Vec<u8>, Nic, Snp) {
     let mut aq = AdminQ::new(dma);
     let up = bring_up(&mut nic, &mut aq, dma, &id, 4000, &mut |_| {}).unwrap();
     nic.commands.clear();
+    // Start's DMA check frame is not the SNP's traffic.
+    nic.wire.clear();
     (mem, nic, Snp::new(up.net, aq, up.link))
 }
 
