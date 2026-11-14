@@ -72,10 +72,37 @@ Commands used (parameter offsets are into the 16 parameter bytes):
 | 0x0212 | Get VSI Parameters | bytes 0-1 SEID; 128-byte buffer: queue_mapping[0] at 30 (first queue), qs_handle[0] at 96 (queue set) |
 | 0x0250 | Add MAC/VLAN | count 0-1, SEID 2-3 with bit 15 valid; element: MAC 0-5, flags 8-9 (perfect 0x1, ignore VLAN 0x4) |
 | 0x0254 | Set VSI Promiscuous Modes | flags 0-1, valid 2-3 (unicast 0x1, multicast 0x2, broadcast 0x4, receive-only 0x8000 from API 1.5), SEID 4-5 |
+| 0x0600 | Get PHY Abilities | indirect, 0x218-byte answer; bytes 0-1 = 0: the current configuration. Answer: PHY types 0-3 (bit n = PHY type n), speeds 4, abilities 5 (pause 0x1/0x2, low power 0x4, link 0x8, AN 0x10, FEC abilities BASE-R 0x40 / RS 0x80), EEE 6-7, EEER 8-11, D3 low-power 12, 25G/2.5G/5G PHY types 13 (25G KR 0x1, CR 0x2, SR 0x4, LR 0x8, AOC 0x10, ACC 0x20), FEC 14 (low 5 bits, below) |
+| 0x0601 | Set PHY Config | direct; the same layout in bytes 0-14 (abilities 5: pause/low power kept, link 0x8, AN 0x10, atomic link restart 0x20; FEC 14) |
 | 0x0605 | Restart AN | byte 0: restart 0x2, link enable 0x4 |
-| 0x0607 | Get Link Status | bytes 0-1: 3 = report changes as ARQ events; answer: PHY type 2, speed 3 (0x02 100M, 0x04 1G, 0x08 10G, 0x10 40G, 0x20 20G, 0x40 25G, 0x01 2.5G, 0x80 5G), link info 4 (bit 0 up), AN info 5 |
+| 0x0607 | Get Link Status | bytes 0-1: 3 = report changes as ARQ events; answer: PHY type 2, speed 3 (0x02 100M, 0x04 1G, 0x08 10G, 0x10 40G, 0x20 20G, 0x40 25G, 0x01 2.5G, 0x80 5G), link info 4 (bit 0 up, 0x40 media available), AN info 5, config 10 (the FEC that runs: 0x1 BASE-R, 0x2 RS) |
 
 Link events arrive on the ARQ with opcode 0x0607 and the same parameters.
+
+### Media and FEC (the stormnic contract, stormnic-i40e#5)
+
+The media is Get Link Status's PHY type: 0x00-0x0d and 0x11-0x31 name a
+media (e.g. 0x14 10GBASE-SR, 0x19 40GBASE-SR4, 0x1f-0x24 25GBASE-KR/CR/SR/LR
+and the 25G AOC/ACC), 0x0e is an unrecognized and 0x0f an unsupported
+module, 0xfe no module. The FEC byte of the PHY configuration: BASE-R
+ability 0x01, RS ability 0x02, BASE-R request 0x04, RS request 0x08, auto
+0x10. The XXV710's NVM default for 25G is auto with both abilities, which
+lets the firmware pick.
+
+The driver applies the IEEE 802.3 FEC for the media itself (`standard_fec`
+in `src/port.rs`): RS-FEC, Clause 108, on 25G (byte 0x0a: RS ability and
+request); none on every other speed of the family (byte 0). At bring-up it
+reads the link and, if the port has media, the current PHY configuration.
+It writes nothing when the port already runs the standard FEC (link up) or
+is configured for it (link down). Otherwise Set PHY Config takes the same
+configuration back with the standard FEC byte, the link enabled and an
+atomic link restart, and Start waits for the link. A firmware that lists no
+PHY type gets no write, since writing that back would turn the link off.
+Errors here never stop the bring-up. They are said on the port's line,
+with the FEC that runs (config byte 10).
+
+Whether a real XXV710 reports the 25G PHY type in Get Link Status while the
+link is down (before RS is set) is to be confirmed on hardware (#2).
 Software reads descriptors up to the ARQ head, re-arms each (BUF, length,
 buffer address) and sets the tail to the last one it read.
 

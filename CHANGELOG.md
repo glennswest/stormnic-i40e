@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-11-13
+- **feat:** #5 the stormnic contract: the driver brings its port up itself with the IEEE standard FEC for its media/speed (25G → RS-FEC Clause 108, 1G–10G/20G/40G → none), via Get PHY Abilities (0x0600) and Set PHY Config (0x0601) only when the port does not already run it; one line per port (driver, PCI address, PCI ID, part, port, MAC, media, speed, FEC running, link), with no link, no module, an unsupported module, a refused or unread FEC, or a port off its standard FEC said as an `error:` line; firmware version moves to the trace
+- **test:** the simulated device has a media, a PHY configuration with FEC, Set PHY Config and a 25G link partner that links only on its FEC; 12 new tests (standard FEC table, configuration bytes, kept/written/refused/unread/no PHY types, no module, unsupported module, the port line, events carrying the FEC)
+- **fix:** the simulator's PHY type 0x1e was labelled 10GBASE-SR (it is 20GBASE-KR2); it now reports 0x14
+
 ### 2026-11-10
 - **docs:** refreshed from the code: PF ID count is 27 (was 26), README names the ID source and the shared `StormnicVerbose` GUID
 - **docs:** #2 work plan: no 700-series NIC in the lab yet (asset list re-checked); hardware check waits on a card
