@@ -55,6 +55,8 @@ pub const OP_GET_SWITCH_CONFIG: u16 = 0x0200;
 pub const OP_GET_VSI_PARAMS: u16 = 0x0212;
 pub const OP_ADD_MACVLAN: u16 = 0x0250;
 pub const OP_SET_VSI_PROMISC: u16 = 0x0254;
+pub const OP_GET_PHY_ABILITIES: u16 = 0x0600;
+pub const OP_SET_PHY_CONFIG: u16 = 0x0601;
 pub const OP_RESTART_AN: u16 = 0x0605;
 pub const OP_GET_LINK_STATUS: u16 = 0x0607;
 
@@ -88,6 +90,29 @@ pub const MACVLAN_ELEM_LEN: usize = 16;
 // Get Link Status: event enable, response bits.
 pub const LSE_ENABLE: u16 = 0x3;
 pub const LINK_UP: u8 = 0x01;
+/// Link info: a module or cable is there.
+pub const MEDIA_AVAILABLE: u8 = 0x40;
+/// Link config byte (parameter 10): the FEC the link runs.
+pub const LINK_FEC_KR: u8 = 0x01;
+pub const LINK_FEC_RS: u8 = 0x02;
+// Get PHY Abilities (answer of 0x218 bytes) / Set PHY Config.
+pub const PHY_ABILITIES_LEN: usize = 0x218;
+/// Abilities: pause TX/RX and low power, kept as they are.
+pub const PHY_KEEP: u8 = 0x07;
+pub const PHY_ENABLE_LINK: u8 = 0x08;
+pub const PHY_ENABLE_AN: u8 = 0x10;
+/// Set PHY Config only: restart the link with the new configuration.
+pub const PHY_ATOMIC_LINK: u8 = 0x20;
+/// Get PHY Abilities only: the PHY can run BASE-R / RS FEC.
+pub const PHY_FEC_ABILITY_KR: u8 = 0x40;
+pub const PHY_FEC_ABILITY_RS: u8 = 0x80;
+/// The FEC configuration byte (answer byte 14 / Set PHY Config byte 14).
+pub const FEC_ABILITY_KR: u8 = 0x01;
+pub const FEC_ABILITY_RS: u8 = 0x02;
+pub const FEC_REQUEST_KR: u8 = 0x04;
+pub const FEC_REQUEST_RS: u8 = 0x08;
+pub const FEC_AUTO: u8 = 0x10;
+pub const FEC_MASK: u8 = 0x1f;
 // Restart AN.
 pub const AN_RESTART: u8 = 0x02;
 pub const AN_LINK_ENABLE: u8 = 0x04;
@@ -134,6 +159,23 @@ pub struct Version {
     pub fw_minor: u16,
     pub api_major: u16,
     pub api_minor: u16,
+}
+
+/// The PHY's current configuration (Get PHY Abilities, first 15 bytes of
+/// the answer), which Set PHY Config takes back with the FEC changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct PhyConfig {
+    /// Bitmap of PHY types (bit n: PHY type n) and of the 25G/2.5G/5G ones.
+    pub phy_types: u32,
+    pub phy_types_ext: u8,
+    /// Get Link Status speed codes, one bit each.
+    pub speeds: u8,
+    pub abilities: u8,
+    pub eee: u16,
+    pub eeer: u32,
+    pub low_power: u8,
+    /// The FEC configuration byte (`FEC_*`), masked.
+    pub fec: u8,
 }
 
 /// The VSI the firmware made for this PF.
@@ -395,6 +437,41 @@ impl AdminQ {
         self.command(b, &mut d, &[], 0)
     }
 
+    /// Get PHY Abilities, the current configuration (parameter 0 = 0: not
+    /// the qualified-module list, not the NVM's initial values).
+    pub fn phy_config<B: Bus>(&mut self, b: &mut B) -> R<PhyConfig, B::Error> {
+        let mut d = Desc::new(OP_GET_PHY_ABILITIES);
+        self.command(b, &mut d, &[], PHY_ABILITIES_LEN)?;
+        let mut a = [0u8; 16];
+        self.response(0, &mut a);
+        Ok(PhyConfig {
+            phy_types: u32::from_le_bytes([a[0], a[1], a[2], a[3]]),
+            speeds: a[4],
+            abilities: a[5],
+            eee: u16::from_le_bytes([a[6], a[7]]),
+            eeer: u32::from_le_bytes([a[8], a[9], a[10], a[11]]),
+            low_power: a[12],
+            phy_types_ext: a[13],
+            fec: a[14] & FEC_MASK,
+        })
+    }
+
+    /// Set PHY Config: `c` with the link enabled and restarted at once
+    /// (atomic) on the new configuration. Autonegotiation and the pause and
+    /// low-power bits stay as `c` has them.
+    pub fn set_phy_config<B: Bus>(&mut self, b: &mut B, c: &PhyConfig) -> R<(), B::Error> {
+        let mut d = Desc::new(OP_SET_PHY_CONFIG);
+        d.set_param32(0, c.phy_types);
+        d.set_param(4, c.speeds);
+        d.set_param(5, (c.abilities & (PHY_KEEP | PHY_ENABLE_AN)) | PHY_ENABLE_LINK | PHY_ATOMIC_LINK);
+        d.set_param16(6, c.eee);
+        d.set_param32(8, c.eeer);
+        d.set_param(12, c.low_power);
+        d.set_param(13, c.phy_types_ext);
+        d.set_param(14, c.fec & FEC_MASK);
+        self.command(b, &mut d, &[], 0)
+    }
+
     /// Queue Shutdown: tell the firmware the driver is unloading.
     pub fn shutdown<B: Bus>(&mut self, b: &mut B) -> R<(), B::Error> {
         let mut d = Desc::new(OP_QUEUE_SHUTDOWN);
@@ -437,5 +514,6 @@ pub fn link_of(d: &Desc) -> Link {
         phy_type: d.param(2),
         info,
         an: d.param(5),
+        config: d.param(10),
     }
 }

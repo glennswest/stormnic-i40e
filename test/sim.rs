@@ -8,6 +8,9 @@
 //! - a firmware that executes admin commands from the ATQ in host memory
 //!   when ATQT moves (checking flags, lengths and buffer addresses), writes
 //!   each descriptor back and moves ATQH, and posts link events to the ARQ;
+//! - the port: a media (PHY type), the PHY configuration Get PHY Abilities
+//!   reports and Set PHY Config replaces, the FEC the link runs from it, and
+//!   a link partner that links only on the FEC it runs (25G);
 //! - the HMC: segment descriptors written through PFHMC_SDCMD, the context
 //!   of a queue found through the paged SD and its PD page when the queue is
 //!   enabled, decoded field by field and checked;
@@ -30,6 +33,8 @@ pub const FIRSTQ: u32 = 64;
 pub const LASTQ: u32 = 127;
 pub const VSI_SEID: u16 = 0x0390;
 pub const QSET: u16 = 0x0123;
+/// PHY types from here to 0x10 are not media (unrecognized, unsupported).
+const PHY_UNRECOGNIZED_SIM: u8 = 0x0e;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ctx {
@@ -66,6 +71,17 @@ pub struct Nic {
     pub an_link_after: Option<usize>,
     pub an_restarts: usize,
     pub an_timer: Option<usize>,
+    /// The media's Get Link Status PHY type (0xfe: none).
+    pub phy: u8,
+    /// A module or cable is in (link info MEDIA_AVAILABLE).
+    pub media: bool,
+    /// The PHY configuration (Get PHY Abilities), FEC byte included.
+    pub phy_cfg: PhyConfig,
+    /// Every Set PHY Config, as its 16 parameter bytes.
+    pub set_phy: Vec<[u8; 16]>,
+    /// The FEC the link partner runs (Get Link Status config bits) on a
+    /// 25G media; after a link restart the link comes up only on it.
+    pub partner_fec: u8,
     pub shutdown: bool,
     /// Elements of the switch configuration, one page each.
     pub switch_pages: Vec<Vec<(u8, u16)>>,
@@ -107,12 +123,57 @@ impl Nic {
             api: (1, 15), commands: vec![], refuse: None, hang: None, pxe: true,
             filters: vec![MAC], promisc: (false, false, true), promisc_flags: vec![], lse: false,
             link_up: true, an_link_after: Some(3), an_restarts: 0, an_timer: None, shutdown: false,
+            phy: 0x14, media: true, phy_cfg: Self::phy_config_for(0x14), set_phy: vec![], partner_fec: 0,
             switch_pages: vec![vec![(1, 0x0002), (17, 0x0200)], vec![(SW_ELEM_VSI, VSI_SEID)]],
             vsi_queue: 0,
             rx_ctx: None, tx_ctx: None, rx_head: 0, tx_head: 0, stuck: None, loopback: false,
             wire: vec![], inbound: vec![], dropped: 0, rx_wb: VecDeque::new(), tx_wb: VecDeque::new(),
             delays: 0, rx_tails: vec![], sd: BTreeMap::new(),
         }
+    }
+
+    /// A firmware's PHY configuration for a port with media `phy`: that
+    /// PHY type enabled with autonegotiation and the link, and for a 25G
+    /// media the XXV710's default, FEC auto with both abilities.
+    pub fn phy_config_for(phy: u8) -> PhyConfig {
+        let is25 = (0x1f..=0x24).contains(&phy);
+        PhyConfig {
+            phy_types: if is25 { 0 } else { 1 << phy },
+            phy_types_ext: if is25 { 1 << (phy - 0x1f) } else { 0 },
+            speeds: if is25 { 0x40 } else { 0x08 },
+            abilities: PHY_ENABLE_LINK | PHY_ENABLE_AN | if is25 { PHY_FEC_ABILITY_KR | PHY_FEC_ABILITY_RS } else { 0 },
+            eee: 0,
+            eeer: 0x1234_5678,
+            low_power: 0,
+            fec: if is25 { FEC_AUTO | FEC_ABILITY_KR | FEC_ABILITY_RS } else { 0 },
+        }
+    }
+
+    /// Put media `phy` in, with the firmware's configuration for it and a
+    /// partner running `partner_fec`.
+    pub fn with_media(&mut self, phy: u8, partner_fec: u8) {
+        self.phy = phy;
+        self.phy_cfg = Self::phy_config_for(phy);
+        self.partner_fec = partner_fec;
+    }
+
+    /// The Get Link Status config bits the link runs on the configuration:
+    /// none below 25G; on 25G, what the FEC byte asks for (auto: what the
+    /// partner runs).
+    pub fn running_fec(&self) -> u8 {
+        if !(0x1f..=0x24).contains(&self.phy) { return 0; }
+        let c = self.phy_cfg.fec;
+        if c & FEC_AUTO != 0 { return self.partner_fec; }
+        if c & (FEC_REQUEST_RS | FEC_ABILITY_RS) != 0 { LINK_FEC_RS }
+        else if c & (FEC_REQUEST_KR | FEC_ABILITY_KR) != 0 { LINK_FEC_KR }
+        else { 0 }
+    }
+
+    /// The link can come up: media in, and on 25G the partner's FEC.
+    pub fn can_link(&self) -> bool {
+        let runnable = self.phy < PHY_UNRECOGNIZED_SIM || (0x11..=0x31).contains(&self.phy);
+        let is25 = (0x1f..=0x24).contains(&self.phy);
+        self.media && runnable && (!is25 || self.running_fec() == self.partner_fec)
     }
 
     pub fn reg(&self, r: u32) -> u32 { *self.regs.get(&r).unwrap_or(&0) }
@@ -257,6 +318,41 @@ impl Nic {
                 self.link_up = false;
                 self.an_timer = self.an_link_after;
             }
+            OP_GET_PHY_ABILITIES => {
+                let (buf, len) = self.buffer(d);
+                assert_eq!(len, 0x218, "Get PHY Abilities answer length");
+                assert_eq!(d.param16(0), 0, "current configuration, not qualified modules or initial values");
+                let c = self.phy_cfg;
+                let mut a = vec![0u8; len];
+                a[0..4].copy_from_slice(&c.phy_types.to_le_bytes());
+                a[4] = c.speeds;
+                a[5] = c.abilities;
+                a[6..8].copy_from_slice(&c.eee.to_le_bytes());
+                a[8..12].copy_from_slice(&c.eeer.to_le_bytes());
+                a[12] = c.low_power;
+                a[13] = c.phy_types_ext;
+                // The module-type bits above the FEC ones are not FEC.
+                a[14] = c.fec | 0xa0;
+                self.write(buf, &a);
+            }
+            OP_SET_PHY_CONFIG if self.refuse.is_some_and(|r| r.0 == op) => {} // refused: nothing changes
+            OP_SET_PHY_CONFIG => {
+                assert!(d.flags() & FLAG_BUF == 0, "Set PHY Config is direct");
+                let mut p = [0u8; 16];
+                p.copy_from_slice(&d.0[16..32]);
+                self.set_phy.push(p);
+                let a = d.param(5);
+                assert!(a & PHY_ENABLE_LINK != 0, "Set PHY Config without the link enabled");
+                assert!(a & PHY_ATOMIC_LINK != 0, "Set PHY Config without the atomic link restart");
+                assert!(d.param32(0) != 0 || d.param(13) != 0, "Set PHY Config with no PHY type turns the link off");
+                assert_eq!(d.param(14) & !FEC_MASK, 0, "FEC byte carries only FEC bits");
+                self.phy_cfg = PhyConfig {
+                    phy_types: d.param32(0), speeds: d.param(4), abilities: a & 0x1f, eee: d.param16(6),
+                    eeer: d.param32(8), low_power: d.param(12), phy_types_ext: d.param(13), fec: d.param(14),
+                };
+                self.link_up = false;
+                self.an_timer = self.an_link_after;
+            }
             OP_QUEUE_SHUTDOWN => {
                 assert_eq!(d.param32(0), 1);
                 self.shutdown = true;
@@ -273,10 +369,13 @@ impl Nic {
     }
 
     fn link_params(&self, d: &mut Desc) {
-        d.set_param(2, 0x1e); // a 10GBASE-SR PHY type
-        d.set_param(3, if self.link_up { 0x08 } else { 0 });
-        d.set_param(4, if self.link_up { LINK_UP | 0x40 } else { 0x40 });
+        let up = self.link_up;
+        d.set_param(2, if self.media { self.phy } else { 0xfe });
+        d.set_param(3, if up { self.phy_cfg.speeds } else { 0 });
+        let media = if self.media { MEDIA_AVAILABLE } else { 0 };
+        d.set_param(4, if up { LINK_UP | media } else { media });
         d.set_param(5, 0x01);
+        d.set_param(10, if up { self.running_fec() } else { 0 });
     }
 
     /// Post a link event on the ARQ, if it has room (head short of tail).
@@ -521,7 +620,7 @@ impl Bus for Nic {
     fn delay_us(&mut self, _: usize) {
         self.delays += 1;
         if let Some(t) = self.an_timer {
-            if t <= 1 { self.an_timer = None; self.link_up = true; } else { self.an_timer = Some(t - 1); }
+            if t <= 1 { self.an_timer = None; self.link_up = self.can_link(); } else { self.an_timer = Some(t - 1); }
         }
         for f in std::mem::take(&mut self.inbound) { self.deliver(&f); }
         self.process_tx();

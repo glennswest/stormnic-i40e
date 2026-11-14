@@ -13,7 +13,9 @@
 //!   vector 0 only so that write-back-on-ITR flushes descriptors, with the
 //!   interrupt itself never enabled), no RSS, one queue pair, no offloads,
 //!   no VLAN, no jumbo frames;
-//! - no NVM, PHY or link-configuration writes beyond "restart
+//! - no NVM writes; the only PHY writes are the port's FEC, set to the IEEE
+//!   802.3 standard for its media (`port`, the stormnic contract,
+//!   stormnic-i40e#5) when the port does not already run it, and "restart
 //!   autonegotiation with the link enabled" when the link is down;
 //! - no flow control: nothing here turns 802.3x pause on.
 //!
@@ -35,6 +37,8 @@ pub mod hmc;
 pub mod ring;
 #[path = "snp_core.rs"]
 pub mod snp;
+#[path = "port.rs"]
+pub mod port;
 
 use core::ptr;
 
@@ -175,10 +179,12 @@ pub struct Link {
     pub up: bool,
     /// Mb/s, 0 when down or the speed code is unknown.
     pub mbps: u32,
-    /// The raw PHY type, link-info and AN-info bytes, for the trace.
+    /// The PHY type (the media: `port::media`), the link-info and AN-info
+    /// bytes, and the config byte (the FEC that runs: `Link::fec`).
     pub phy_type: u8,
     pub info: u8,
     pub an: u8,
+    pub config: u8,
 }
 
 /// Mb/s for a Get Link Status speed code (one bit set).
@@ -363,8 +369,10 @@ pub enum Step<E> {
     /// (not fatal: the firmware's own filter passes untagged frames).
     MacFilter(Result<bool, Error<E>>),
     Hmc(hmc::Layout),
-    /// The link, and how long Start waited after restarting
-    /// autonegotiation (None: it was up, nothing restarted).
+    /// The link as first read, and the port's FEC brought to the standard.
+    Fec { link: Link, fec: port::PortFec<E> },
+    /// The link, and how long Start waited after setting the FEC or
+    /// restarting autonegotiation (None: it was up, nothing restarted).
     Link { link: Link, waited_ms: Option<usize> },
     /// The DMA check: the descriptor came back after this many ms, or not
     /// within 100 ms.
@@ -372,21 +380,26 @@ pub enum Step<E> {
 }
 
 /// The device brought up: what the SNP needs.
-pub struct Up {
+pub struct Up<E> {
     pub net: ring::Net,
     pub link: Link,
     pub version: adminq::Version,
+    pub fec: port::PortFec<E>,
+    /// How long Start waited for the link (0: it was up).
+    pub waited_ms: usize,
 }
 
 /// Start's bring-up, each step reported to `log`: clear what a previous
 /// driver left, reset the PF, set up the admin queue and ask the firmware
 /// for its version, out of PXE mode, the MAC address and the VSI; add the
-/// MAC filter, lay out the HMC, read the link (restarting autonegotiation
-/// and waiting up to `link_wait_ms` if it is down) and, when it is up, run
+/// MAC filter, lay out the HMC, read the link, bring the port's FEC to the
+/// standard for its media (`port::port_fec`), wait up to `link_wait_ms` for
+/// the link if the FEC was written or the link is down (restarting
+/// autonegotiation in the second case) and, when it is up, run
 /// the DMA check on the queue pair. The queues are stopped on return; on
 /// Err the caller tears down with `release`.
 pub fn bring_up<B: Bus>(b: &mut B, aq: &mut adminq::AdminQ, dma: Dma, id: &Identity, link_wait_ms: usize,
-    log: &mut dyn FnMut(Step<B::Error>)) -> R<Up, B::Error> {
+    log: &mut dyn FnMut(Step<B::Error>)) -> R<Up<B::Error>, B::Error> {
     clear(b, id)?;
     log(Step::Reset(pf_reset(b)?));
     aq.init(b)?;
@@ -401,14 +414,19 @@ pub fn bring_up<B: Bus>(b: &mut B, aq: &mut adminq::AdminQ, dma: Dma, id: &Ident
     let layout = hmc::setup(b, &dma, id.pf, vsi.queue as u32)?;
     log(Step::Hmc(layout));
     let mut link = aq.link(b, false)?;
+    let fec = port::port_fec(b, aq, &link);
+    log(Step::Fec { link, fec });
     let mut waited_ms = None;
-    if !link.up {
-        aq.restart_an(b)?;
+    let written = matches!(fec.set, port::FecSet::Written);
+    if !link.up || written {
+        // Set PHY Config restarted the link already.
+        if !written { aq.restart_an(b)?; }
         let mut waited = 0;
-        while !link.up && waited < link_wait_ms {
+        while waited < link_wait_ms {
             b.delay_us(100_000);
             waited += 100;
             link = aq.link(b, false)?;
+            if link.up { break; }
         }
         waited_ms = Some(waited);
     }
@@ -420,7 +438,7 @@ pub fn bring_up<B: Bus>(b: &mut B, aq: &mut adminq::AdminQ, dma: Dma, id: &Ident
         net.stop(b)?;
         log(Step::Check(checked?));
     }
-    Ok(Up { net, link, version })
+    Ok(Up { net, link, version, fec, waited_ms: waited_ms.unwrap_or(0) })
 }
 
 pub fn unicast(m: [u8; 6]) -> bool {

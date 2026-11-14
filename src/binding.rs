@@ -234,6 +234,8 @@ fn command(opcode: u16) -> &'static str {
         OP_GET_VSI_PARAMS => "Get VSI Parameters",
         OP_ADD_MACVLAN => "Add MAC/VLAN",
         OP_SET_VSI_PROMISC => "Set VSI Promiscuous Modes",
+        OP_GET_PHY_ABILITIES => "Get PHY Abilities",
+        OP_SET_PHY_CONFIG => "Set PHY Config",
         OP_RESTART_AN => "Restart AN",
         OP_GET_LINK_STATUS => "Get Link Status",
         _ => "command",
@@ -375,7 +377,7 @@ impl I40eDriver {
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
-        let (mac, link, fw) = (up.net.mac, up.link, up.version);
+        let (mac, link, fw, fec, waited_ms) = (up.net.mac, up.link, up.version, up.fec, up.waited_ms);
         let port = match snp::create(agent.as_ptr(), controller.as_ptr(), &pci, BAR, up.net, aq, link, location) {
             Ok(p) => p,
             Err((status, in_use)) => {
@@ -390,10 +392,20 @@ impl I40eDriver {
             }
         };
         self.bound.push(Bound { controller, location, decode: attributes, dma: region, port, pci });
-        // The one default line per NIC (stormnic-ixgbe#22).
+        // The one default line per port (stormnic-ixgbe#22), in the stormnic
+        // contract's form (#5): driver, PCI address, MAC, media, speed, FEC,
+        // link; a port without link or off its standard FEC is an error line.
+        let detail = fec.error().map(|e| alloc::format!("{}", error(e)));
         say!(
-            "stormnic-i40e {}: {at} 8086:{dev:04x} {}: firmware {}.{} API {}.{}, MAC {}, link {}, SNP installed (verified in simulation only)",
-            env!("CARGO_PKG_VERSION"), nic.name, fw.fw_major, fw.fw_minor, fw.api_major, fw.api_minor, mac_str(mac), link
+            "{}",
+            i40e::port::PortLine {
+                version: env!("CARGO_PKG_VERSION"), at: &at, device: dev, part: nic.name, port: id.port, mac, link,
+                fec: &fec, waited_ms, detail: detail.as_ref().map(|d| d as &dyn core::fmt::Display),
+            }
+        );
+        trace!(
+            "stormnic-i40e: {at} 8086:{dev:04x}: firmware {}.{} API {}.{}, SNP installed (verified in simulation only)",
+            fw.fw_major, fw.fw_minor, fw.api_major, fw.api_minor
         );
         console::begin();
         Ok(())
@@ -464,12 +476,29 @@ fn log_step(at: &impl core::fmt::Display, dev: u16, step: Step<Status>) {
             "stormnic-i40e: {at} 8086:{dev:04x}: HMC: {} queue context(s), {} B TX / {} B RX objects, RX contexts at {:#x}; DMA {} pages",
             l.count, l.tx_size, l.rx_size, l.rx_base, i40e::DMA_PAGES
         ),
+        Step::Fec { link, fec } => {
+            let media = i40e::port::media(link.phy_type).map(|(n, _)| n).unwrap_or("unknown");
+            let before = fec.before.map(|c| i40e::port::Fec::of_config(c.fec).name()).unwrap_or("not read");
+            let abilities = fec.before.map(|c| c.abilities).unwrap_or(0);
+            let what = match fec.set {
+                i40e::port::FecSet::Kept => alloc::format!("kept ({})", if link.up { "running" } else { "configured" }),
+                i40e::port::FecSet::Written => "written with Set PHY Config, link restarted".into(),
+                i40e::port::FecSet::NoMedia => "not set: no media".into(),
+                i40e::port::FecSet::NoPhyTypes => "not set: the firmware lists no PHY type".into(),
+                i40e::port::FecSet::Unread(e) => alloc::format!("not read: {}", error(&e)),
+                i40e::port::FecSet::Refused(e) => alloc::format!("not set: {}", error(&e)),
+            };
+            trace!(
+                "stormnic-i40e: {at} 8086:{dev:04x}: media {media} (PHY type {:#04x}), link {link} running FEC {}; standard FEC {}, configured {before} (PHY abilities {abilities:#04x}): {what}",
+                link.phy_type, link.fec().name(), fec.standard.name()
+            );
+        }
         Step::Link { link, waited_ms: None } => trace!(
             "stormnic-i40e: {at} 8086:{dev:04x}: link {link} (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
             link.phy_type, link.info, link.an
         ),
         Step::Link { link, waited_ms: Some(ms) } => trace!(
-            "stormnic-i40e: {at} 8086:{dev:04x}: link was down; autonegotiation restarted, link {link} after {ms} ms (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
+            "stormnic-i40e: {at} 8086:{dev:04x}: link restarted (FEC written, or autonegotiation restarted as the link was down), link {link} after {ms} ms (PHY type {:#04x}, link info {:#04x}, AN info {:#04x})",
             link.phy_type, link.info, link.an
         ),
         Step::Check(Some(ms)) => trace!(

@@ -9,12 +9,13 @@ use i40e::adminq::*;
 use i40e::hmc::{self, get};
 use i40e::ring;
 use i40e::*;
+use i40e::port::*;
 use sim::*;
 
 type E = &'static str;
 
 /// Run the whole bring-up; the steps it logged.
-fn bring(nic: &mut Nic, dma: Dma) -> (R<Up, E>, Vec<Step<E>>, AdminQ) {
+fn bring(nic: &mut Nic, dma: Dma) -> (R<Up<E>, E>, Vec<Step<E>>, AdminQ) {
     let id = identify(nic).unwrap();
     let mut aq = AdminQ::new(dma);
     let mut log = Vec::new();
@@ -22,7 +23,7 @@ fn bring(nic: &mut Nic, dma: Dma) -> (R<Up, E>, Vec<Step<E>>, AdminQ) {
     (r, log, aq)
 }
 
-fn up() -> (Vec<u8>, Nic, Up, AdminQ) {
+fn up() -> (Vec<u8>, Nic, Up<E>, AdminQ) {
     let (mem, mut nic, dma) = setup();
     let (r, _, aq) = bring(&mut nic, dma);
     (mem, nic, r.unwrap(), aq)
@@ -51,7 +52,7 @@ fn bring_up_runs_every_step_in_order() {
     assert_eq!(
         nic.commands,
         vec![OP_GET_VERSION, OP_CLEAR_PXE, OP_MAC_ADDRESS_READ, OP_GET_SWITCH_CONFIG, OP_GET_SWITCH_CONFIG,
-            OP_GET_VSI_PARAMS, OP_ADD_MACVLAN, OP_GET_LINK_STATUS]
+            OP_GET_VSI_PARAMS, OP_ADD_MACVLAN, OP_GET_LINK_STATUS, OP_GET_PHY_ABILITIES]
     );
     assert_eq!(nic.pf_resets, 1);
     assert!(!nic.pxe);
@@ -61,8 +62,9 @@ fn bring_up_runs_every_step_in_order() {
     assert_eq!(log[2], Step::Pxe(true));
     assert_eq!(log[3], Step::Vsi { mac: MAC, vsi: Vsi { seid: VSI_SEID, queue: 0, qset: QSET } });
     assert_eq!(log[4], Step::MacFilter(Ok(true)));
-    assert!(matches!(log[6], Step::Link { waited_ms: None, .. }));
-    assert!(matches!(log[7], Step::Check(Some(_))), "{:?}", log[7]);
+    assert!(matches!(log[6], Step::Fec { fec: PortFec { standard: Fec::None, set: FecSet::Kept, .. }, .. }), "{:?}", log[6]);
+    assert!(matches!(log[7], Step::Link { waited_ms: None, .. }));
+    assert!(matches!(log[8], Step::Check(Some(_))), "{:?}", log[8]);
     assert_eq!(nic.wire.len(), 1, "the DMA check frame went out");
     assert_eq!(nic.wire[0], ring::check_frame(MAC).to_vec());
     // The queues are stopped again.
@@ -462,4 +464,189 @@ fn speeds_and_link_display() {
     assert_eq!(Link { up: true, mbps: 25_000, ..Default::default() }.to_string(), "up 25 Gb/s");
     assert_eq!(Link { up: true, mbps: 2_500, ..Default::default() }.to_string(), "up 2500 Mb/s");
     assert_eq!(Link::default().to_string(), "down");
+}
+
+// ---- The port: standard FEC per media, one line (stormnic-i40e#5) ----
+
+const RS: u8 = LINK_FEC_RS;
+const KR: u8 = LINK_FEC_KR;
+
+fn line(up: &Up<E>, detail: Option<&dyn core::fmt::Display>) -> String {
+    PortLine {
+        version: "0.2.0", at: "0000:01:00.1", device: 0x158b, part: "XXV710", port: 1, mac: MAC, link: up.link,
+        fec: &up.fec, waited_ms: up.waited_ms, detail,
+    }
+    .to_string()
+}
+
+fn sets(nic: &Nic) -> usize { nic.commands.iter().filter(|c| **c == OP_SET_PHY_CONFIG).count() }
+
+#[test]
+fn the_standard_fec_per_media_and_speed() {
+    for phy in 0x1f..=0x24u8 { assert_eq!(standard_fec(phy), Fec::Rs, "25G PHY type {phy:#x}"); }
+    for phy in [0x00u8, 0x01, 0x03, 0x04, 0x07, 0x0a, 0x0b, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18, 0x19, 0x1a, 0x1b, 0x1e, 0x26, 0x27] {
+        assert_eq!(standard_fec(phy), Fec::None, "PHY type {phy:#x}");
+    }
+    assert_eq!(standard_fec(PHY_EMPTY), Fec::None);
+    assert_eq!(standard_fec(PHY_UNSUPPORTED), Fec::None);
+    assert_eq!(media(0x21), Some(("25GBASE-SR", 25_000)));
+    assert_eq!(media(0x14), Some(("10GBASE-SR", 10_000)));
+    assert_eq!(media(0x19), Some(("40GBASE-SR4", 40_000)));
+    assert_eq!(media(PHY_UNRECOGNIZED), None);
+}
+
+#[test]
+fn fec_configuration_bytes() {
+    for f in [Fec::None, Fec::BaseR, Fec::Rs, Fec::Auto] { assert_eq!(Fec::of_config(f.config()), f); }
+    assert_eq!(Fec::Rs.config(), FEC_ABILITY_RS | FEC_REQUEST_RS);
+    assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS), Fec::Auto);
+    assert_eq!(Fec::of_config(FEC_REQUEST_RS), Fec::Rs);
+    let l = |config| Link { up: true, config, ..Default::default() };
+    assert_eq!((l(0).fec(), l(KR).fec(), l(RS).fec()), (Fec::None, Fec::BaseR, Fec::Rs));
+}
+
+#[test]
+fn a_10g_port_keeps_no_fec_and_says_so() {
+    let (_mem, nic, up, _) = up();
+    assert_eq!(up.fec.set, FecSet::Kept);
+    assert_eq!(sets(&nic), 0, "nothing written");
+    assert_eq!(
+        line(&up, None),
+        "stormnic-i40e 0.2.0: 0000:01:00.1 8086:158b XXV710 port 1: MAC 02:11:22:33:44:55, media 10GBASE-SR, speed 10 Gb/s, FEC none, link UP"
+    );
+}
+
+#[test]
+fn a_25g_port_already_on_rs_is_left_alone() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, RS); // NVM default: FEC auto, partner RS
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::Kept);
+    assert_eq!(sets(&nic), 0);
+    assert_eq!(nic.an_restarts, 0);
+    assert!(line(&up, None).ends_with("media 25GBASE-SR, speed 25 Gb/s, FEC rs, link UP"), "{}", line(&up, None));
+}
+
+#[test]
+fn a_25g_port_down_gets_rs_and_links() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x20, RS);
+    nic.phy_cfg.fec = 0; // a previous driver turned FEC off: the RS partner never links
+    nic.link_up = false;
+    let before = nic.phy_cfg;
+    let (r, log, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::Written);
+    assert_eq!(nic.an_restarts, 0, "Set PHY Config restarted the link; no extra Restart AN");
+    assert_eq!(nic.set_phy.len(), 1);
+    let p = nic.set_phy[0];
+    assert_eq!(u32::from_le_bytes([p[0], p[1], p[2], p[3]]), before.phy_types);
+    assert_eq!(p[4], before.speeds);
+    assert_eq!(p[5], PHY_ENABLE_LINK | PHY_ENABLE_AN | PHY_ATOMIC_LINK, "FEC ability bits are not Set PHY Config's");
+    assert_eq!(u32::from_le_bytes([p[8], p[9], p[10], p[11]]), before.eeer);
+    assert_eq!(p[13], before.phy_types_ext);
+    assert_eq!(p[14], FEC_ABILITY_RS | FEC_REQUEST_RS);
+    assert!(up.link.up);
+    assert_eq!(up.link.fec(), Fec::Rs);
+    assert!(log.iter().any(|s| matches!(s, Step::Link { waited_ms: Some(300), .. })), "{log:?}");
+    assert!(log.iter().any(|s| matches!(s, Step::Check(Some(_)))));
+    assert!(line(&up, None).ends_with("media 25GBASE-CR, speed 25 Gb/s, FEC rs, link UP"), "{}", line(&up, None));
+}
+
+#[test]
+fn a_25g_port_on_base_r_is_moved_to_rs() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, KR); // auto picked BASE-R with a BASE-R partner
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::Written);
+    assert_eq!(nic.phy_cfg.fec, FEC_ABILITY_RS | FEC_REQUEST_RS);
+    // The partner stays on BASE-R: no link, said as an error.
+    assert!(!up.link.up);
+    let l = line(&up, None);
+    assert!(
+        l.ends_with("media 25GBASE-SR, speed none, FEC rs, link DOWN: error: no link after 4000 ms (the link partner must run RS-FEC too, IEEE 802.3 Clause 108; check the cable and the switch port)"),
+        "{l}"
+    );
+}
+
+#[test]
+fn a_refused_fec_still_brings_the_port_up_and_says_why() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, KR);
+    nic.refuse = Some((OP_SET_PHY_CONFIG, 2));
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::Refused(Error::Admin { opcode: OP_SET_PHY_CONFIG, retval: 2 }));
+    assert!(up.link.up, "the link stays as it was");
+    let l = line(&up, Some(&"firmware error 2"));
+    assert!(
+        l.ends_with("speed 25 Gb/s, FEC base-r, link UP: error: the standard FEC for 25GBASE-SR is rs; FEC not set (Set PHY Config): firmware error 2"),
+        "{l}"
+    );
+}
+
+#[test]
+fn an_unread_phy_configuration_is_reported() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, RS);
+    nic.phy_cfg.fec = 0;
+    nic.link_up = false;
+    nic.refuse = Some((OP_GET_PHY_ABILITIES, 5));
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert!(matches!(up.fec.set, FecSet::Unread(Error::Admin { opcode: OP_GET_PHY_ABILITIES, .. })));
+    assert_eq!(nic.an_restarts, 1, "the link is still restarted");
+    let l = line(&up, Some(&"refused"));
+    assert!(l.contains("FEC unknown, link DOWN: error: no link after 4000 ms; FEC not read: refused (the link partner"), "{l}");
+}
+
+#[test]
+fn no_phy_types_writes_nothing() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, RS);
+    nic.phy_cfg = PhyConfig { fec: 0, ..Default::default() };
+    nic.link_up = false;
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::NoPhyTypes);
+    assert_eq!(sets(&nic), 0);
+    assert!(line(&up, None).contains("FEC none, link DOWN: error: no link after 4000 ms; FEC not set: the firmware lists no PHY type"));
+}
+
+#[test]
+fn no_module_is_an_error_line() {
+    let (_mem, mut nic, dma) = setup();
+    nic.media = false;
+    nic.link_up = false;
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::NoMedia);
+    assert!(!nic.commands.contains(&OP_GET_PHY_ABILITIES));
+    assert!(line(&up, None).ends_with("media none, speed none, FEC unknown, link DOWN: error: no module or cable (the firmware reports no media)"));
+}
+
+#[test]
+fn an_unsupported_module_is_an_error_line() {
+    let (_mem, mut nic, dma) = setup();
+    nic.phy = PHY_UNSUPPORTED;
+    nic.link_up = false;
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::NoMedia);
+    assert!(line(&up, None).ends_with("media PHY type 0x0f, speed none, FEC unknown, link DOWN: error: the firmware does not run this media (PHY type 0x0f, unsupported module)"),
+        "{}", line(&up, None));
+}
+
+#[test]
+fn link_events_carry_the_running_fec() {
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, RS);
+    let (r, _, mut aq) = bring(&mut nic, dma);
+    r.unwrap();
+    aq.link(&mut nic, true).unwrap();
+    assert!(nic.event(true));
+    let l = aq.events(&mut nic).unwrap().unwrap();
+    assert_eq!((l.mbps, l.fec()), (25_000, Fec::Rs));
 }
