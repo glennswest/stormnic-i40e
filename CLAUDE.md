@@ -64,14 +64,18 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
   - [x] `sc-build scripts/check-driver.sh` at 1529945: x86_64 65,536 B
         (sha256 fc51e1bd…f976), aarch64 61,440 B, PE32+ subsystem 11, clippy clean
   - [x] docs/hardware.md, README, NOTICE, CHANGELOG, v0.1.0
-- [ ] #5 — the stormnic contract (stormbootx#202): the driver brings its port
+- [x] #5 — the stormnic contract (stormbootx#202): the driver brings its port
       up itself with the IEEE standard FEC for its media/speed (25G → RS,
       10G/40G/1G and below → none) via Get PHY Abilities (0x0600) and Set PHY
       Config (0x0601), reads the FEC that runs from Get Link Status, and says
       one line per port (driver, PCI address, MAC, media, speed, FEC, link);
       a port off its standard FEC or without link is an error line.
-      Simulated device gets PHY abilities / FEC; then host tests + driver build.
-- [ ] #2 — run it on a real 700-series NIC (none in the lab); only then pin in
+      Done at 230a674 (src/port.rs): `sc-build scripts/test-host.sh` 61 pass
+      (i40e 42, snp 16, trace 3); `sc-build scripts/check-driver.sh` x86_64
+      73,216 B (sha256 e4c9d5e3…8bef4), aarch64 68,096 B, PE32+ subsystem 11,
+      clippy clean. Closed on simulation like #1; the line on a real card is #2's.
+- [ ] #2 — run it on a real 700-series NIC (none in the lab), including #5's
+      per-port line (standard FEC, link UP; on an XXV710 at 25G: `FEC rs`); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
       — waiting on a card (2026-11-10: asset list still shows only 82599, tg3
       and ConnectX-3/-4 Lx NICs); parked with `wait-owner --until`.
