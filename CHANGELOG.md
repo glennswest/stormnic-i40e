@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### 2026-11-17
+- **docs:** refreshed from the code (`git log --since=2026-11-10`: only #5 and its docs landed): README's example port line carries the built version 0.1.0 (was 0.2.0); README, docs/hardware.md and CLAUDE.md otherwise already match src/port.rs, the 4000 ms link wait and the console; nothing promised that the code does not do (hardware verification stays #2)
+
 ### 2026-11-13
 - **feat:** #5 the stormnic contract: the driver brings its port up itself with the IEEE standard FEC for its media/speed (25G → RS-FEC Clause 108, 1G–10G/20G/40G → none), via Get PHY Abilities (0x0600) and Set PHY Config (0x0601) only when the port does not already run it; one line per port (driver, PCI address, PCI ID, part, port, MAC, media, speed, FEC running, link), with no link, no module, an unsupported module, a refused or unread FEC, or a port off its standard FEC said as an `error:` line; firmware version moves to the trace
 - **test:** the simulated device has a media, a PHY configuration with FEC, Set PHY Config and a 25G link partner that links only on its FEC; 12 new tests (standard FEC table, configuration bytes, kept/written/refused/unread/no PHY types, no module, unsupported module, the port line, events carrying the FEC)

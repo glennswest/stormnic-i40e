@@ -38,7 +38,7 @@ reset the PF before any memory is given back.
 Console: one line per port, the stormnic contract's: driver and version,
 PCI address, PCI ID, part, port, MAC, media, speed, FEC (what runs) and
 link, e.g.
-`stormnic-i40e 0.2.0: 0000:01:00.1 8086:158b XXV710 port 1: MAC 02:11:22:33:44:55, media 25GBASE-SR, speed 25 Gb/s, FEC rs, link UP`.
+`stormnic-i40e 0.1.0: 0000:01:00.1 8086:158b XXV710 port 1: MAC 02:11:22:33:44:55, media 25GBASE-SR, speed 25 Gb/s, FEC rs, link UP`.
 A port without link, or off its standard FEC, is an error line:
 `…, media 25GBASE-SR, speed none, FEC rs, link DOWN: error: no link after 4000 ms (the link partner must run RS-FEC too, IEEE 802.3 Clause 108; check the cable and the switch port)`;
 no module (`media none … no module or cable`), a module the firmware does
