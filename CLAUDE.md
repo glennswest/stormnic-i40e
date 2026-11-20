@@ -74,6 +74,10 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
       (i40e 42, snp 16, trace 3); `sc-build scripts/check-driver.sh` x86_64
       73,216 B (sha256 e4c9d5e3…8bef4), aarch64 68,096 B, PE32+ subsystem 11,
       clippy clean. Closed on simulation like #1; the line on a real card is #2's.
+- [ ] #7 (P0, finding 704188c2551d) — a failed teardown (keep_dma) must leave
+      bus mastering off: the decode restore after it puts back MSE and the
+      original attributes but never BME (decode::release with DMA kept), and
+      BME is checked clear at the end; host tests in test/decode.rs.
 - [ ] #2 — run it on a real 700-series NIC (none in the lab), including #5's
       per-port line (standard FEC, link UP; on an XXV710 at 25G: `FEC rs`); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
