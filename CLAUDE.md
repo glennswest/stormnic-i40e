@@ -74,10 +74,17 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
       (i40e 42, snp 16, trace 3); `sc-build scripts/check-driver.sh` x86_64
       73,216 B (sha256 e4c9d5e3…8bef4), aarch64 68,096 B, PE32+ subsystem 11,
       clippy clean. Closed on simulation like #1; the line on a real card is #2's.
-- [ ] #7 (P0, finding 704188c2551d) — a failed teardown (keep_dma) must leave
+- [x] #7 (P0, finding 704188c2551d) — a failed teardown (keep_dma) leaves
       bus mastering off: the decode restore after it puts back MSE and the
       original attributes but never BME (decode::release with DMA kept), and
-      BME is checked clear at the end; host tests in test/decode.rs.
+      BME is checked clear at the end. Done at 30e971b: `sc-build
+      scripts/test-host.sh` 67 pass (i40e 42, snp 16, trace 3, decode 6);
+      `sc-build scripts/check-driver.sh` x86_64 73,216 B (sha256 58f88c52…1cdf),
+      aarch64 68,096 B, PE32+ subsystem 11, clippy clean.
+- [ ] Findings still open in stormcentral (P1 after #7): 9b7243b167eb (port.rs:66
+      FEC capability bit taken as a request), beafcf3a3ebd (snp_core.rs:341
+      GetStatus tx complete early), e7839b0884f0 (snp_core.rs:188 Shutdown keeps
+      tx tokens); minor ed51df4d0a5f (port.rs:280).
 - [ ] #2 — run it on a real 700-series NIC (none in the lab), including #5's
       per-port line (standard FEC, link UP; on an XXV710 at 25G: `FEC rs`); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
