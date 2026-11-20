@@ -171,6 +171,11 @@ impl Net {
         r
     }
 
+    /// Transmit descriptors retired since `start` (modulo 2^usize): they
+    /// retire in order, so the n-th frame sent since `start` is done once
+    /// this passes n.
+    pub fn tx_retired(&self) -> usize { self.tx_cons }
+
     /// Transmit descriptors the device still owns.
     pub fn tx_pending(&self) -> usize { self.tx_prod.wrapping_sub(self.tx_cons) }
 

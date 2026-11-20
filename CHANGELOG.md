@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### 2026-11-20
+- **fix:** #8 (finding beafcf3a3ebd): GetStatus handed a transmit token back (and set TRANSMIT_INTERRUPT) as soon as the frame was queued, whether or not the device had sent it. Each token now waits with its descriptor: it is recycled, and TRANSMIT reported, only once the device has written that descriptor back done (`Net::tx_retired`)
+- **fix:** #8 (finding e7839b0884f0): Shutdown, Stop, Reset, re-Initialize, halt and teardown left the tokens of discarded frames queued, so the next Initialize's GetStatus returned them as sent and repeated cycles filled the recycle queue. Every ring stop or restart now forgets them
+- **test:** test/snp.rs: a stalled NIC recycles nothing until it sends; GetStatus without recycle keeps done buffers; Shutdown/Reset/re-Initialize/Stop discard unsent tokens; 192 shutdown cycles never fill the recycle queue
 - **fix:** #7 (finding 704188c2551d, critical): after a teardown that failed (binding Stop, or a Start failure after bring-up or SNP install), `keep_dma` turned bus mastering off and the PCI restore right after put the original attributes and command bits back, so a function that had BME on before Start got it back on over the abandoned DMA region. `decode::release` now takes whether the DMA region was kept: then memory decode and the other attributes are restored but BME never is, and BME is checked and cleared again at the end
 - **test:** test/decode.rs (in `scripts/test-host.sh`): enable/release against a fake PCI function, quiet release restores BME as found, kept-DMA release leaves BME off by attributes, by command register, without `Get`, and when firmware's `Set` turns it back on
 

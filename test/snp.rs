@@ -172,6 +172,9 @@ fn transmit_fills_the_header_and_get_status_hands_buffers_back_in_order() {
     assert_eq!(&nic.wire[0][0..14], &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, MAC[0], MAC[1], MAC[2], MAC[3], MAC[4], MAC[5], 0x08, 0x06]);
     let mut g = frame(OTHER, 2, 60);
     s.transmit(&mut nic, 0, &mut g, None, None, None, 0x2000).unwrap();
+    // Both on the wire, their descriptors not yet written back: not done.
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None));
+    i40e::Bus::delay_us(&mut nic, 20);
     let (bits, t) = s.get_status(&mut nic, true).unwrap();
     assert_eq!((bits & snp::TRANSMIT_INTERRUPT, t), (snp::TRANSMIT_INTERRUPT, Some(0x1000)));
     assert_eq!(s.get_status(&mut nic, true).unwrap().1, Some(0x2000));
@@ -179,6 +182,86 @@ fn transmit_fills_the_header_and_get_status_hands_buffers_back_in_order() {
     assert_eq!(s.transmit(&mut nic, 14, &mut f, None, None, Some(1), 1), Err(Fail::InvalidParameter));
     assert_eq!(s.transmit(&mut nic, 0, &mut [0u8; 10], None, None, None, 1), Err(Fail::BufferTooSmall(14)));
     assert_eq!(s.transmit(&mut nic, 0, &mut [0u8; 1600], None, None, None, 1), Err(Fail::InvalidParameter));
+}
+
+/// The device sends nothing (no link): transmits stay with it.
+fn stall(nic: &mut Nic) { nic.link_up = false; }
+
+/// Transmit one 60-byte frame with `token`.
+fn send(nic: &mut Nic, s: &mut Snp, token: usize) {
+    let mut f = frame(OTHER, token as u16, 60);
+    s.transmit(nic, 0, &mut f, None, None, None, token).unwrap();
+}
+
+#[test]
+fn get_status_hands_a_buffer_back_only_once_its_descriptor_is_done() {
+    // Finding beafcf3a3ebd: a stalled NIC still owns the frame.
+    let (_mem, mut nic, mut s) = up();
+    stall(&mut nic);
+    send(&mut nic, &mut s, 0x1000);
+    send(&mut nic, &mut s, 0x2000);
+    for _ in 0..5 {
+        i40e::Bus::delay_us(&mut nic, 20);
+        assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None), "nothing sent, nothing recycled");
+    }
+    assert!(nic.wire.is_empty());
+    nic.link_up = true;
+    i40e::Bus::delay_us(&mut nic, 20);
+    assert_eq!(nic.wire.len(), 2);
+    let (bits, t) = s.get_status(&mut nic, true).unwrap();
+    assert_eq!((bits & snp::TRANSMIT_INTERRUPT, t), (snp::TRANSMIT_INTERRUPT, Some(0x1000)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, Some(0x2000)));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None));
+}
+
+#[test]
+fn get_status_without_recycle_keeps_done_buffers_for_later() {
+    let (_mem, mut nic, mut s) = up();
+    send(&mut nic, &mut s, 7);
+    i40e::Bus::delay_us(&mut nic, 20);
+    let (bits, t) = s.get_status(&mut nic, false).unwrap();
+    assert_eq!((bits & snp::TRANSMIT_INTERRUPT, t), (snp::TRANSMIT_INTERRUPT, None));
+    assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, Some(7)));
+}
+
+#[test]
+fn shutdown_reset_and_reinitialize_discard_unsent_tokens() {
+    // Finding e7839b0884f0: no token of a discarded frame comes back.
+    for how in ["shutdown", "reset", "initialize", "stop"] {
+        let (_mem, mut nic, mut s) = up();
+        stall(&mut nic);
+        send(&mut nic, &mut s, 1);
+        send(&mut nic, &mut s, 2);
+        match how {
+            "shutdown" => { s.shutdown(&mut nic).unwrap(); s.initialize(&mut nic).unwrap(); }
+            "reset" => s.reset(&mut nic).unwrap(),
+            "initialize" => s.initialize(&mut nic).unwrap(),
+            _ => { s.stop(&mut nic).unwrap(); s.start::<&str>().unwrap(); s.initialize(&mut nic).unwrap(); }
+        }
+        nic.link_up = true;
+        i40e::Bus::delay_us(&mut nic, 20);
+        assert_eq!(s.get_status(&mut nic, true).unwrap(), (0, None), "{how}: old tokens gone");
+        send(&mut nic, &mut s, 3);
+        i40e::Bus::delay_us(&mut nic, 20);
+        let (bits, t) = s.get_status(&mut nic, true).unwrap();
+        assert_eq!((bits & snp::TRANSMIT_INTERRUPT, t), (snp::TRANSMIT_INTERRUPT, Some(3)), "{how}");
+        assert_eq!(s.get_status(&mut nic, true).unwrap().1, None, "{how}");
+    }
+}
+
+#[test]
+fn repeated_shutdown_cycles_never_fill_the_recycle_queue() {
+    let (_mem, mut nic, mut s) = up();
+    stall(&mut nic);
+    for i in 0..3 * snp::RECYCLE {
+        send(&mut nic, &mut s, i);
+        s.shutdown(&mut nic).unwrap();
+        s.initialize(&mut nic).unwrap();
+    }
+    nic.link_up = true;
+    send(&mut nic, &mut s, 0xabc);
+    i40e::Bus::delay_us(&mut nic, 20);
+    assert_eq!(s.get_status(&mut nic, true).unwrap().1, Some(0xabc));
 }
 
 #[test]

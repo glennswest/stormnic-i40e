@@ -81,10 +81,12 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
       scripts/test-host.sh` 67 pass (i40e 42, snp 16, trace 3, decode 6);
       `sc-build scripts/check-driver.sh` x86_64 73,216 B (sha256 58f88c52…1cdf),
       aarch64 68,096 B, PE32+ subsystem 11, clippy clean.
-- [ ] Findings still open in stormcentral (P1 after #7): 9b7243b167eb (port.rs:66
-      FEC capability bit taken as a request), beafcf3a3ebd (snp_core.rs:341
-      GetStatus tx complete early), e7839b0884f0 (snp_core.rs:188 Shutdown keeps
-      tx tokens); minor ed51df4d0a5f (port.rs:280).
+- [ ] #8 (P1, findings beafcf3a3ebd, e7839b0884f0) — GetStatus recycles a
+      transmit token only once its descriptor is done; every ring stop/restart
+      (Shutdown, Stop, Reset, re-Initialize, halt, teardown) forgets the tokens
+      of discarded frames. In progress: fix + tests in test/snp.rs.
+- [ ] Findings still open in stormcentral: 9b7243b167eb (port.rs:66
+      FEC capability bit taken as a request); minor ed51df4d0a5f (port.rs:280).
 - [ ] #2 — run it on a real 700-series NIC (none in the lab), including #5's
       per-port line (standard FEC, link UP; on an XXV710 at 25G: `FEC rs`); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media

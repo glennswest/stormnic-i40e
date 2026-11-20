@@ -20,8 +20,14 @@
 //! The queues run only between Initialize and Shutdown/Stop (or halt, at
 //! ExitBootServices): every other state has them disabled.
 //!
-//! Transmit copies the frame into a ring buffer, so the caller's buffer is
-//! free at once; it is queued for GetStatus to hand back, as the spec asks.
+//! Transmit copies the frame into a ring buffer; its token (the caller's
+//! buffer) is queued with the frame's descriptor, and GetStatus hands it
+//! back, and reports TRANSMIT, only once the device has marked that
+//! descriptor done: a recycled buffer means the frame went out, as the spec
+//! says. Frames retire in order, so the tokens do too. When the rings stop
+//! (Shutdown, Stop, Reset, re-Initialize, halt, teardown) the frames not
+//! sent are discarded and so are their tokens: the next Initialize starts
+//! with none.
 
 use super::adminq::AdminQ;
 use super::ring::{Net, MAX_FRAME, MIN_FRAME};
@@ -100,12 +106,17 @@ pub struct Snp {
     pub media: bool,
     /// The last link state read.
     pub link: Link,
-    /// A frame went out since the last GetStatus.
+    /// A transmit descriptor was seen done since the last GetStatus.
     transmitted: bool,
-    /// Caller buffers (as addresses) for GetStatus, oldest at `head`.
+    /// Caller buffers (as addresses) of the frames transmitted since the
+    /// rings last started, oldest at `head`; the first `done` of the
+    /// `queued` have their descriptors done.
     recycle: [usize; RECYCLE],
     head: usize,
     queued: usize,
+    done: usize,
+    /// `net.tx_retired()` when last looked at.
+    retired: usize,
 }
 
 /// `EFI_SIMPLE_NETWORK_PROTOCOL.MCastIpToMac`: IPv4 224.0.0.0/4 maps to
@@ -127,7 +138,29 @@ impl Snp {
         Snp {
             net, aq, state: State::Stopped, permanent: mac, current: mac,
             setting: 0, mcast: [[0; 6]; MAX_MCAST], mcast_count: 0, media: link.up, link,
-            transmitted: false, recycle: [0; RECYCLE], head: 0, queued: 0,
+            transmitted: false, recycle: [0; RECYCLE], head: 0, queued: 0, done: 0, retired: 0,
+        }
+    }
+
+    /// The rings stopped or are about to restart: frames not yet sent are
+    /// gone, so no token of this run may come back from GetStatus.
+    fn forget_tx(&mut self) {
+        self.transmitted = false;
+        self.head = 0;
+        self.queued = 0;
+        self.done = 0;
+        self.retired = 0;
+    }
+
+    /// Retire done descriptors and move their tokens to `done`.
+    fn complete_tx(&mut self) {
+        self.net.reclaim();
+        let now = self.net.tx_retired();
+        let n = now.wrapping_sub(self.retired);
+        self.retired = now;
+        if n > 0 {
+            self.done = (self.done + n).min(self.queued);
+            self.transmitted = true;
         }
     }
 
@@ -185,6 +218,7 @@ impl Snp {
     /// Shutdown: quiesce the NIC; initialized to started.
     pub fn shutdown<B: Bus>(&mut self, b: &mut B) -> F<(), B::Error> {
         self.initialized()?;
+        self.forget_tx();
         self.net.stop(b)?;
         self.state = State::Started;
         Ok(())
@@ -193,6 +227,8 @@ impl Snp {
     /// Start the queues, set the switch's filters for the current setting,
     /// and read the link with change events turned on.
     fn run<B: Bus>(&mut self, b: &mut B) -> F<(), B::Error> {
+        // Reset and re-Initialize stopped the rings just before.
+        self.forget_tx();
         if let Err(e) = self.net.start(b) {
             // `start` disabled the queues again; nothing runs.
             self.state = State::Started;
@@ -304,10 +340,11 @@ impl Snp {
         }
         if buf.len() < MIN_FRAME { return Err(Fail::BufferTooSmall(MIN_FRAME)); }
         if self.queued == RECYCLE { return Err(Fail::NotReady); }
+        // Account for what retired before `net.transmit` reclaims it.
+        self.complete_tx();
         if !self.net.transmit(b, buf)? { return Err(Fail::NotReady); }
         self.recycle[(self.head + self.queued) % RECYCLE] = token;
         self.queued += 1;
-        self.transmitted = true;
         Ok(())
     }
 
@@ -326,11 +363,12 @@ impl Snp {
     }
 
     /// GetStatus: interrupt bits (RECEIVE when a frame is waiting, TRANSMIT
-    /// when one went out since the last call), the link into `media`, and
-    /// with `recycle` the oldest transmitted buffer not yet handed back.
+    /// when a transmit descriptor was seen done since the last call), the
+    /// link into `media`, and with `recycle` the oldest buffer whose frame
+    /// the device has sent and that was not yet handed back.
     pub fn get_status<B: Bus>(&mut self, b: &mut B, recycle: bool) -> F<(u32, Option<usize>), B::Error> {
         self.initialized()?;
-        self.net.reclaim();
+        self.complete_tx();
         if let Some(link) = self.aq.events(b)? {
             self.link = link;
             self.media = link.up;
@@ -338,10 +376,11 @@ impl Snp {
         let mut bits = 0;
         if self.next_accepted(b)?.is_some() { bits |= RECEIVE_INTERRUPT; }
         if core::mem::take(&mut self.transmitted) { bits |= TRANSMIT_INTERRUPT; }
-        let token = (recycle && self.queued > 0).then(|| {
+        let token = (recycle && self.done > 0).then(|| {
             let t = self.recycle[self.head];
             self.head = (self.head + 1) % RECYCLE;
             self.queued -= 1;
+            self.done -= 1;
             t
         });
         Ok((bits, token))
@@ -350,6 +389,7 @@ impl Snp {
     /// Stop the queues whatever the state (the SNP child going away).
     pub fn halt<B: Bus>(&mut self, b: &mut B) -> Result<(), Error<B::Error>> {
         self.state = State::Stopped;
+        self.forget_tx();
         self.net.stop(b)
     }
 
@@ -362,6 +402,7 @@ impl Snp {
     /// steps did); Err: the device may still DMA.
     pub fn teardown<B: Bus>(&mut self, b: &mut B) -> Result<(), Error<B::Error>> {
         self.state = State::Stopped;
+        self.forget_tx();
         let queues = self.net.stop(b);
         super::release(b, &mut self.aq).or_else(|e| queues.and(Err(e)))
     }
