@@ -16,7 +16,8 @@
 //!    write-1-to-clear bits) and read back. Only if they are still clear
 //!    does Start fail.
 //!
-//! `release` undoes exactly what `enable` did.
+//! `release` undoes exactly what `enable` did, except that after a failed
+//! teardown (DMA region kept) it never turns bus mastering back on.
 
 /// `EFI_PCI_IO_ATTRIBUTE_MEMORY`.
 pub const ATTRIBUTE_MEMORY: u64 = 0x0002;
@@ -108,20 +109,36 @@ pub fn enable<P: Pci>(pci: &P) -> Result<Enabled<P::Status>, Error<P::Status>> {
 /// Put the function back as `enable` found it, in reverse order: the
 /// command register to its state after `Enable`, then the attributes.
 /// Returns the first failure; the other step runs anyway.
-pub fn release<P: Pci>(pci: &P, e: &Enabled<P::Status>) -> Result<(), P::Status> {
+///
+/// `dma_kept`: the device would not tear down and its DMA region was left
+/// allocated (`stop_bus_master` was called on it). Then bus mastering is
+/// never put back, even if it was on before Start: memory decode and the
+/// other attributes are restored, BME stays off, and it is checked clear at
+/// the end (cleared again if `Set` turned it on). Finding 704188c2551d (#7).
+pub fn release<P: Pci>(pci: &P, e: &Enabled<P::Status>, dma_kept: bool) -> Result<(), P::Status> {
+    let keep = if dma_kept { COMMAND_WANTED & !COMMAND_BUS_MASTER } else { COMMAND_WANTED };
     let mut r = Ok(());
     if let Some(before) = e.command_before {
         r = pci.config_read_u16(COMMAND).and_then(|now| {
-            pci.config_write_u16(COMMAND, (now & !COMMAND_WANTED) | (before & COMMAND_WANTED))
+            pci.config_write_u16(COMMAND, (now & !COMMAND_WANTED) | (before & keep))
         });
     }
     if e.by_attributes != 0 {
         let a = match e.original {
+            Ok(original) if dma_kept => pci.set(original & !ATTRIBUTE_BUS_MASTER),
             Ok(original) => pci.set(original),
             Err(_) => pci.disable(e.by_attributes),
         };
         if r.is_ok() {
             r = a;
+        }
+    }
+    if dma_kept {
+        let off = stop_bus_master(pci);
+        if r.is_ok() {
+            if let Err(Some(s)) = off {
+                r = Err(s);
+            }
         }
     }
     r

@@ -345,7 +345,7 @@ impl I40eDriver {
             Ok(id) => id,
             Err(e) => {
                 fail!("stormnic-i40e: {at} 8086:{dev:04x} {}: {}; releasing", nic.name, error(&e));
-                restore(&pci, &attributes);
+                restore(&pci, &attributes, Teardown::Quiet);
                 return Err(Status::UNSUPPORTED.into());
             }
         };
@@ -357,7 +357,7 @@ impl I40eDriver {
             Ok(r) => r,
             Err(e) => {
                 fail!("stormnic-i40e: {at} 8086:{dev:04x}: DMA region not mapped: {:?}; releasing", e.status());
-                restore(&pci, &attributes);
+                restore(&pci, &attributes, Teardown::Quiet);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
@@ -366,14 +366,15 @@ impl I40eDriver {
             Ok(up) => up,
             Err(e) => {
                 fail!("stormnic-i40e: {at} 8086:{dev:04x} {}: bring-up failed: {}", nic.name, error(&e));
-                match i40e::release(&mut bars, &mut aq) {
+                let t = match i40e::release(&mut bars, &mut aq) {
                     Ok(()) => {
                         region.release(&pci);
                         say!("stormnic-i40e: {at} 8086:{dev:04x}: PF reset, DMA region released; releasing");
+                        Teardown::Quiet
                     }
                     Err(e) => keep_dma(&pci, &at, &e),
-                }
-                restore(&pci, &attributes);
+                };
+                restore(&pci, &attributes, t);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
@@ -382,12 +383,13 @@ impl I40eDriver {
             Ok(p) => p,
             Err((status, in_use)) => {
                 fail!("stormnic-i40e: {at} 8086:{dev:04x}: SNP not installed: {status:?}; releasing");
-                if in_use {
-                    keep_dma(&pci, &at, &Error::Io(status));
+                let t = if in_use {
+                    keep_dma(&pci, &at, &Error::Io(status))
                 } else {
                     region.release(&pci);
-                }
-                restore(&pci, &attributes);
+                    Teardown::Quiet
+                };
+                restore(&pci, &attributes, t);
                 return Err(Status::DEVICE_ERROR.into());
             }
         };
@@ -435,11 +437,14 @@ impl I40eDriver {
         }
         let b = self.bound.swap_remove(i);
         // SAFETY: the child is gone, so nothing else reaches the Port.
-        match unsafe { snp::destroy(b.port) } {
-            Ok(()) => b.dma.release(&b.pci),
+        let t = match unsafe { snp::destroy(b.port) } {
+            Ok(()) => {
+                b.dma.release(&b.pci);
+                Teardown::Quiet
+            }
             Err(e) => keep_dma(&b.pci, &at(b.location), &e),
-        }
-        restore(&b.pci, &b.decode);
+        };
+        restore(&b.pci, &b.decode, t);
         trace!("stormnic-i40e: {}: Stop: released", at(b.location));
         Ok(())
     }
@@ -512,18 +517,28 @@ fn log_step(at: &impl core::fmt::Display, dev: u16, step: Step<Status>) {
 
 /// The device would not tear down: it might still DMA into the region, so
 /// it is never freed. Bus mastering is turned off at the PCI level instead;
-/// the pages stay allocated until reboot.
-fn keep_dma(pci: &PciIo, at: &impl core::fmt::Display, e: &Error<Status>) {
+/// the pages stay allocated until reboot, and the `restore` that follows is
+/// told so (`Teardown::DmaKept`) and leaves BME off (#7).
+fn keep_dma(pci: &PciIo, at: &impl core::fmt::Display, e: &Error<Status>) -> Teardown {
     let off = decode::stop_bus_master(pci);
     fail!(
         "stormnic-i40e: {at}: could not tear the device down ({}); bus mastering {}, DMA region kept allocated",
         error(e),
         if off.is_ok() { "disabled" } else { "could not be disabled" }
     );
+    Teardown::DmaKept
 }
 
-fn restore(pci: &PciIo, e: &Enabled<Status>) {
-    if let Err(s) = decode::release(pci, e) {
+/// Whether the DMA region was freed (or never made) or kept because the
+/// device would not stop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Teardown {
+    Quiet,
+    DmaKept,
+}
+
+fn restore(pci: &PciIo, e: &Enabled<Status>, t: Teardown) {
+    if let Err(s) = decode::release(pci, e, t == Teardown::DmaKept) {
         say!("stormnic-i40e: could not undo the PCI decode and bus-master changes: {s:?}");
     }
 }

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-11-20
+- **fix:** #7 (finding 704188c2551d, critical): after a teardown that failed (binding Stop, or a Start failure after bring-up or SNP install), `keep_dma` turned bus mastering off and the PCI restore right after put the original attributes and command bits back, so a function that had BME on before Start got it back on over the abandoned DMA region. `decode::release` now takes whether the DMA region was kept: then memory decode and the other attributes are restored but BME never is, and BME is checked and cleared again at the end
+- **test:** test/decode.rs (in `scripts/test-host.sh`): enable/release against a fake PCI function, quiet release restores BME as found, kept-DMA release leaves BME off by attributes, by command register, without `Get`, and when firmware's `Set` turns it back on
+
 ### 2026-11-17
 - **docs:** refreshed from the code (`git log --since=2026-11-10`: only #5 and its docs landed): README's example port line carries the built version 0.1.0 (was 0.2.0); README, docs/hardware.md and CLAUDE.md otherwise already match src/port.rs, the 4000 ms link wait and the console; nothing promised that the code does not do (hardware verification stays #2)
 

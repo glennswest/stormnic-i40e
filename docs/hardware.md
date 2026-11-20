@@ -175,3 +175,10 @@ descriptor with RS. The receive tail is moved in steps of eight.
 Queues stopped, Queue Shutdown (best effort), both admin queues disabled
 and their registers zeroed, the SD invalidated, PF reset. Only then is the
 DMA region freed (binding Stop) or the OS let in (ExitBootServices).
+
+If a step fails and the device cannot be shown to have stopped, the DMA
+region is never freed: Bus Master Enable is cleared (PciIo `Disable`, then
+the command register, read back), the pages stay allocated until reset, and
+the PCI state is restored as Start found it **except bus mastering**, which
+stays off even if it was on before Start, and is checked clear again at the
+end (#7).
