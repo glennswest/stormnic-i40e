@@ -499,7 +499,8 @@ fn the_standard_fec_per_media_and_speed() {
 fn fec_configuration_bytes() {
     for f in [Fec::None, Fec::BaseR, Fec::Rs, Fec::Auto] { assert_eq!(Fec::of_config(f.config()), f); }
     assert_eq!(Fec::Rs.config(), FEC_ABILITY_RS | FEC_REQUEST_RS);
-    assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS), Fec::Auto);
+    assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS), Fec::None);
+    assert_eq!(Fec::of_config(FEC_AUTO | FEC_ABILITY_KR | FEC_ABILITY_RS), Fec::Auto);
     // An ability alone requests nothing; a request needs its ability
     // (finding 9b7243b167eb).
     assert_eq!(Fec::of_config(FEC_ABILITY_RS), Fec::None);
