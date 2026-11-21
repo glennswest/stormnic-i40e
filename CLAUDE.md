@@ -85,8 +85,12 @@ sc-build scripts/test-host.sh      # core against the simulated X710 (test/sim.r
       transmit token only once its descriptor is done; every ring stop/restart
       (Shutdown, Stop, Reset, re-Initialize, halt, teardown) forgets the tokens
       of discarded frames. In progress: fix + tests in test/snp.rs.
-- [ ] Findings still open in stormcentral: 9b7243b167eb (port.rs:66
-      FEC capability bit taken as a request); minor ed51df4d0a5f (port.rs:280).
+- [ ] #9 (P1, finding 9b7243b167eb) — port.rs:66 `Fec::of_config` took a
+      FEC ability bit as a request, so a down 25G port configured with only
+      RS ability was "already RS" and never written. In progress: decode the
+      requests (with their ability) apart from abilities; simulator's
+      running FEC likewise; tests in test/i40e.rs.
+- [ ] Finding still open in stormcentral: minor ed51df4d0a5f (port.rs:280).
 - [ ] #2 — run it on a real 700-series NIC (none in the lab), including #5's
       per-port line (standard FEC, link UP; on an XXV710 at 25G: `FEC rs`); only then pin in
       stormbootx's nic-drivers (stormbootx#71) and put it on the rustnic media
