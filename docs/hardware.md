@@ -86,8 +86,11 @@ media (e.g. 0x14 10GBASE-SR, 0x19 40GBASE-SR4, 0x1f-0x24 25GBASE-KR/CR/SR/LR
 and the 25G AOC/ACC), 0x0e is an unrecognized and 0x0f an unsupported
 module, 0xfe no module. The FEC byte of the PHY configuration: BASE-R
 ability 0x01, RS ability 0x02, BASE-R request 0x04, RS request 0x08, auto
-0x10. The XXV710's NVM default for 25G is auto with both abilities, which
-lets the firmware pick.
+0x10. The abilities only say which encodings the firmware may use; an
+encoding is asked for by its request bit with its ability, or left to the
+firmware by auto, so a byte with an ability and no request asks for no FEC
+(`Fec::of_config`). The XXV710's NVM default for 25G is auto with both
+abilities, which lets the firmware pick.
 
 The driver applies the IEEE 802.3 FEC for the media itself (`standard_fec`
 in `src/port.rs`): RS-FEC, Clause 108, on 25G (byte 0x0a: RS ability and

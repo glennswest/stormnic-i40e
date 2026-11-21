@@ -60,11 +60,15 @@ impl Fec {
         }
     }
 
-    /// What an FEC configuration byte asks for.
+    /// What an FEC configuration byte asks for. The ability bits only say
+    /// which encodings the firmware may use; an encoding is asked for by its
+    /// request bit, together with its ability (as `config` writes it), or
+    /// left to the firmware by auto. An ability alone asks for nothing
+    /// (finding 9b7243b167eb): a byte of RS ability only is not RS.
     pub fn of_config(c: u8) -> Fec {
         use adminq::*;
-        let kr = c & (FEC_ABILITY_KR | FEC_REQUEST_KR) != 0;
-        let rs = c & (FEC_ABILITY_RS | FEC_REQUEST_RS) != 0;
+        let kr = c & FEC_REQUEST_KR != 0 && c & FEC_ABILITY_KR != 0;
+        let rs = c & FEC_REQUEST_RS != 0 && c & FEC_ABILITY_RS != 0;
         match (c & FEC_AUTO != 0, kr, rs) {
             (false, false, false) => Fec::None,
             (false, true, false) => Fec::BaseR,

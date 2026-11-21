@@ -158,14 +158,16 @@ impl Nic {
     }
 
     /// The Get Link Status config bits the link runs on the configuration:
-    /// none below 25G; on 25G, what the FEC byte asks for (auto: what the
+    /// none below 25G; on 25G, what the FEC byte requests (auto: what the
     /// partner runs).
     pub fn running_fec(&self) -> u8 {
         if !(0x1f..=0x24).contains(&self.phy) { return 0; }
         let c = self.phy_cfg.fec;
         if c & FEC_AUTO != 0 { return self.partner_fec; }
-        if c & (FEC_REQUEST_RS | FEC_ABILITY_RS) != 0 { LINK_FEC_RS }
-        else if c & (FEC_REQUEST_KR | FEC_ABILITY_KR) != 0 { LINK_FEC_KR }
+        // An encoding runs only when requested with its ability; an ability
+        // alone requests nothing.
+        if c & FEC_REQUEST_RS != 0 && c & FEC_ABILITY_RS != 0 { LINK_FEC_RS }
+        else if c & FEC_REQUEST_KR != 0 && c & FEC_ABILITY_KR != 0 { LINK_FEC_KR }
         else { 0 }
     }
 

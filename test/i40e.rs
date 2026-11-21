@@ -500,7 +500,15 @@ fn fec_configuration_bytes() {
     for f in [Fec::None, Fec::BaseR, Fec::Rs, Fec::Auto] { assert_eq!(Fec::of_config(f.config()), f); }
     assert_eq!(Fec::Rs.config(), FEC_ABILITY_RS | FEC_REQUEST_RS);
     assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS), Fec::Auto);
-    assert_eq!(Fec::of_config(FEC_REQUEST_RS), Fec::Rs);
+    // An ability alone requests nothing; a request needs its ability
+    // (finding 9b7243b167eb).
+    assert_eq!(Fec::of_config(FEC_ABILITY_RS), Fec::None);
+    assert_eq!(Fec::of_config(FEC_ABILITY_KR), Fec::None);
+    assert_eq!(Fec::of_config(FEC_REQUEST_RS), Fec::None);
+    assert_eq!(Fec::of_config(FEC_REQUEST_KR), Fec::None);
+    assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS | FEC_REQUEST_RS), Fec::Rs);
+    assert_eq!(Fec::of_config(FEC_ABILITY_RS | FEC_ABILITY_KR | FEC_REQUEST_KR), Fec::BaseR);
+    assert_eq!(Fec::of_config(FEC_ABILITY_KR | FEC_ABILITY_RS | FEC_REQUEST_KR | FEC_REQUEST_RS), Fec::Auto);
     let l = |config| Link { up: true, config, ..Default::default() };
     assert_eq!((l(0).fec(), l(KR).fec(), l(RS).fec()), (Fec::None, Fec::BaseR, Fec::Rs));
 }
@@ -552,6 +560,42 @@ fn a_25g_port_down_gets_rs_and_links() {
     assert!(log.iter().any(|s| matches!(s, Step::Link { waited_ms: Some(300), .. })), "{log:?}");
     assert!(log.iter().any(|s| matches!(s, Step::Check(Some(_)))));
     assert!(line(&up, None).ends_with("media 25GBASE-CR, speed 25 Gb/s, FEC rs, link UP"), "{}", line(&up, None));
+}
+
+#[test]
+fn a_25g_port_down_with_rs_ability_only_gets_rs_requested() {
+    // Finding 9b7243b167eb: RS ability without the RS request is not a
+    // port configured for RS; the RS partner stays down until it is asked.
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x21, RS);
+    nic.phy_cfg.fec = FEC_ABILITY_RS;
+    nic.link_up = false;
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.before.map(|c| c.fec), Some(FEC_ABILITY_RS));
+    assert_eq!(up.fec.set, FecSet::Written);
+    assert_eq!(nic.set_phy.len(), 1);
+    assert_eq!(nic.set_phy[0][14], FEC_ABILITY_RS | FEC_REQUEST_RS);
+    assert_eq!(nic.an_restarts, 0, "Set PHY Config restarted the link");
+    assert!(up.link.up);
+    assert_eq!(up.link.fec(), Fec::Rs);
+    assert!(line(&up, None).ends_with("media 25GBASE-SR, speed 25 Gb/s, FEC rs, link UP"), "{}", line(&up, None));
+}
+
+#[test]
+fn a_10g_port_down_with_fec_abilities_only_is_not_written() {
+    // Abilities alone request no FEC: a 10G port with them is already on
+    // its standard (none), so nothing is written.
+    let (_mem, mut nic, dma) = setup();
+    nic.with_media(0x14, 0);
+    nic.phy_cfg.fec = FEC_ABILITY_KR | FEC_ABILITY_RS;
+    nic.link_up = false;
+    let (r, _, _) = bring(&mut nic, dma);
+    let up = r.unwrap();
+    assert_eq!(up.fec.set, FecSet::Kept);
+    assert_eq!(sets(&nic), 0, "nothing written");
+    assert_eq!(nic.an_restarts, 1, "the link is restarted, not reconfigured");
+    assert_eq!(up.fec.configured(), Some(Fec::None));
 }
 
 #[test]

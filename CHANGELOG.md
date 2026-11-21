@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### 2026-11-20
+- **fix:** #9 (finding 9b7243b167eb): `Fec::of_config` took the FEC ability bits (which encodings the PHY supports) as requests, so a down 25G port whose configuration had only RS ability (0x02) counted as already configured for RS and was never written, leaving an RS partner down; and a port of other media with abilities only counted as off its standard. An encoding is now read as asked for only by its request bit with its ability (or auto); the simulator's running FEC follows the same rule
+- **test:** test/i40e.rs: configuration bytes with abilities only, requests only and both; a down 25G port with RS ability only gets RS requested and links; a down 10G port with abilities only is not written
 - **fix:** #8 (finding beafcf3a3ebd): GetStatus handed a transmit token back (and set TRANSMIT_INTERRUPT) as soon as the frame was queued, whether or not the device had sent it. Each token now waits with its descriptor: it is recycled, and TRANSMIT reported, only once the device has written that descriptor back done (`Net::tx_retired`)
 - **fix:** #8 (finding e7839b0884f0): Shutdown, Stop, Reset, re-Initialize, halt and teardown left the tokens of discarded frames queued, so the next Initialize's GetStatus returned them as sent and repeated cycles filled the recycle queue. Every ring stop or restart now forgets them
 - **test:** test/snp.rs: a stalled NIC recycles nothing until it sends; GetStatus without recycle keeps done buffers; Shutdown/Reset/re-Initialize/Stop discard unsent tokens; 192 shutdown cycles never fill the recycle queue
